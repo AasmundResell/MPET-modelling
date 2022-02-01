@@ -4,19 +4,24 @@ solver_settings:
   log_level : 20
   T : 3.0
   num_T_steps : 360
+  num_networks : 1
   OOC : False
   BLR : False
   linearize : True
   element_type : TH
-
+  
 
 material_parameters:
   E : 1500 # Young modulus
   nu : 0.479 # Poisson ratio
   alpha : 1.0
-  kappa : 1.0e-16
-  c :   1.0e-6
-  rho : 1007
+  kappa : 4e-9 #[m²  to mm²] Permeability
+  c :   10e-6 #Storage coefficient
+  rho : 1081 #Density of tissue
+  mu : 0.7e-3
+
+
+
 
 source_data:
   source_file : data/baladont_tot_inflow_series_shifted.csv

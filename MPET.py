@@ -3,44 +3,126 @@ from mshr import *
 import ufl
 import numpy as np
 import matplotlib.pyplot as plt
+from tabulate import tabulate
 
 
 class MPET:
-    def __init__(self,*args,**kwargs):
-        self.dim = args[0]
-        self.networks = args[1]
-        self.mesh = args[2]
+    def __init__(self,nDim,mesh,**kwargs):
+        self.dim = nDim 
+        self.mesh = mesh
+        self.n_networks = kwargs.get("num_networks") 
         self.T = kwargs.get("T")
-        self.numTsteps = kwargs.get("numTsteps")
-        self.E = kwargs.get("E")
+        self.numTsteps = kwargs.get("num_T_steps")
+        self.E =  kwargs.get("E")
         self.nu = kwargs.get("nu")
         self.c = kwargs.get("c")
-
+        self.element_type = kwargs.get("element_type")
         #For each network
         self.rho = kwargs.get("rho")
-        self.kappa = kwargs.get("")
+        self.mu = kwargs.get("mu")
+        self.kappa = kwargs.get("kappa")
+        self.alpha = kwargs.get("alpha")
+
+        self.K = self.kappa/self.mu
+        self.Lambda = self.nu*self.E/((1+self.nu)*(1-2*self.nu))
+        self.my = self.E/(2*(1+self.nu))
         
+        self.conversionP = 133.32 #Pressure conversion: mmHg to Pa
+
         
-    def ProblemSetup(self):
+
+    def generateUFLexpressions(self):
+        import sympy as sym
+            
+        t = sym.symbols("t")
+        
+        p_VEN = sym.symbols("p_VEN")
+        p_SAS = sym.symbols("p_SAS")
+        fx = 0  # force term x-direction
+        fy = 0  # force term y-direction
+        p_initial1 = 0.0
+        p_initial0 = -self.alpha*p_initial1
+        pSkull = p_SAS
+        pVentricles = p_VEN
+
+
+        #TODO:SET IN CONFIG FILE 
+        Compliance = 2.5e3/conversionP # [microL/mmHg] to [mm^3/Pa]
+        Resistance = 10.81*conversionP*60e-3 # [mmHg*min/microL] to [Pa*s/mm^3]
+        beta_VEN = 0.1
+        beta_SAS = 0.1
+        
+        print("C=",Compliance)
+        print("R=",Resistance)
+    
+        variables = [
+            self.my,
+            self.Lambda,
+            self.alpha,
+            self.c,
+            self.K,
+            fx,
+            fy,
+            pSkull,
+            pVentricles,
+            p_initial0,
+            p_initial1,
+        ]
+
+        variables = [sym.printing.ccode(var) for var in variables]  # Generate C++ code
+
+        UFLvariables = [
+            Expression(var, degree=2, t=0.0, p_VEN= 0.0,p_SAS = 0.0) for var in variables
+        ]  # Generate ufl varibles
+
+        (
+            self.my_UFL,
+            self.Lambda_UFL,
+            self.alpha_UFL,
+            self.c_UFL,
+            self.K_UFL,
+            self.fx_UFL,
+            self.fy_UFL,
+            self.pSkull_UFL,
+            self.pVentricles_UFL,
+            self.p_initial0_UFL,
+            self.p_initial1_UFL,
+        
+        ) = UFLvariables
+        self.f_UFL = as_vector((fx, fy))
+        self.U_UFL = as_vector((Expression("0.0", degree=2), Expression("0.0", degree=2)))
+
+    def printSetup(self):
+
+        print("\n SOLVER SETUP\n")
+        print(tabulate([['Problem Dimension', self.dim],
+                        ['Number of networks', self.networks],
+                        ['Total time',self.T],
+                        ['Number of timesteps',self.numTsteps],
+                        ['Element type',self.element_type]],
+
+                       headers=['Setting', 'Value']))
+
+    
+        print("\n MATERIAL PARAMETERS\n")
+        print(tabulate([['Young Modulus', self.E, 'Pa'],
+                        ['nu', self.nu],
+                        ['c', self.c],
+                        ['kappa', self.kappa, 'mm^2'],
+                        ['rho', self.rho],
+                        ['mu', self.mu],
+                        ['alpha', self.alpha]],
+                       headers=['Parameter', 'Value', 'Unit']))
+
+    def problemSetup(self):
         """
         Called from init?
 
         """
-        print("Setting up problem")
+        print("Setting up problem...\n")
 
-
-    def solve(
-        self,
-        mesh,
-        T,
-        numTsteps,
-        numPnetworks,
-        f,
-        alpha,
-        K,
-        cj,
-        my,
-        Lambda,
+        print("Generating UFL expressions\n")
+        self.generateUFLexpressions()
         boundary_conditionsU,
         boundary_conditionsP,
         boundary_markers,
@@ -52,7 +134,6 @@ class MPET:
         Compliance=None,
         Resistance=None,
         filesave = "solution_transient",
-    ):
 
 
         ds = Measure("ds", domain=mesh, subdomain_data=boundary_markers)
@@ -157,11 +238,8 @@ class MPET:
                 interpolate(p_initial[0], W.sub(1).collapse())
             )  # Apply intial total pressure
             p_n = split(up_n)  # p_n[0] = u_n, p_n[1],p_n[2],... = p0_n,p1_n,...
-    def SetBCNetworks():
-        """
-        Sets the boundary conditions and source terms for the fluid networks
-        """
-        for i in range(numPnetworks):  # apply for each network
+
+        for i in range(self.num_networks):  # apply for each network
             print("Network: ", i)    
             for j in range(1, boundaryNum + 1):  # for each boundary
                 print("Boundary: ", j)

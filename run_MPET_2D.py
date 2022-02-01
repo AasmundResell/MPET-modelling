@@ -1,35 +1,21 @@
+import os
+print(os.environ['PATH'])
+
 from meshes.brain_mesh_2D import generate_2D_brain_mesh_mm, generate_2D_brain_mesh_m
 #from meshes.read_brain_mesh_3D import read_brain_mesh_3D,read_brain_scale
 from ufl import FacetNormal, as_vector
 from dolfin import *
-import sympy as sym
 import csv
 import yaml
 
 from MPET import MPET
 
+
 def run_MPET_2D(n = 20):
 
     mesh = generate_2D_brain_mesh_mm(n)
-    dim = 2
-    numNetworks = 2  
-    ymlFile = open("configTest.yml")
-    parsedValues = yaml.load(ymlFile, Loader=yaml.FullLoader)
-
-    print(parsedValues['solver_settings'])
-    print(parsedValues['material_parameters'])
-    materialParameters = parsedValues['material_parameters']
-    T = parsedValues['solver_settings']['T']
-
-    num_T_steps = parsedValues['solver_settings']['num_T_steps']
-    print(T)
-    Solver2D = MPET(dim,numNetworks,parsedValues)
-
-
-def run_physical_2D_brain_WindkesselBC(n=20):
-    mesh = generate_2D_brain_mesh_mm(n)
-
     n = FacetNormal(mesh)  # normal vector on the boundary
+
     # Define boundary
     boundary_markers = MeshFunction("size_t", mesh, 1)
     boundary_markers.set_all(9999)
@@ -40,82 +26,23 @@ def run_physical_2D_brain_WindkesselBC(n=20):
     bx1.mark(boundary_markers, 2)  # Overwrites the inner ventricles boundary
     bx2 = BoundaryChannel()
     bx2.mark(boundary_markers, 3)  # Overwrites the channel ventricles boundary
-    #Defining material parameters and expressions
-    E = 1500
-    nu = 0.49
-    my = E/(2*(1+nu))
-    Lambda = nu*E/((1+nu)*(1-2*nu))
-    conversionP = 133.32#Pressure conversion: mmHg to Pa
+
+    dim = 2
+
+    ymlFile = open("configTest.yml")
+    parsedValues = yaml.load(ymlFile, Loader=yaml.FullLoader)
+    materialParameters = parsedValues['material_parameters']
+    settings = parsedValues['solver_settings']
     
-    alpha = 0.49
-    c = 10e-6
-    kappa = 4e-15*1e6 #[m²  to mm²]
-    mu_f = 0.7e-3
-    K = kappa/mu_f
-    t = sym.symbols("t")
-    p_VEN = sym.symbols("p_VEN")
-    p_SAS = sym.symbols("p_SAS")
-    fx = 0  # force term x-direction
-    fy = 0  # force term y-direction
-    p_initial1 = 0.0
-    p_initial0 = -alpha*p_initial1
-    pSkull = p_SAS
-    pVentricles = p_VEN
+    Solver2D = MPET(dim,numNetworks,mesh,**settings, **materialParameters) 
 
-    Compliance = 2.5e3/conversionP # [microL/mmHg] to [mm^3/Pa]
-    Resistance = 10.81*conversionP*60e-3 # [mmHg*min/microL] to [Pa*s/mm^3]
-    beta_VEN = 0.1
-    beta_SAS = 0.1
     
-    print("C=",Compliance)
-    print("R=",Resistance)
-    
-    variables = [
-        my,
-        Lambda,
-        alpha,
-        c,
-        K,
-        fx,
-        fy,
-        pSkull,
-        pVentricles,
-        p_initial0,
-        p_initial1,
-    ]
+    Solver2D.printSetup()
 
-    variables = [sym.printing.ccode(var) for var in variables]  # Generate C++ code
+    Solver2D.problemSetup()
 
-    UFLvariables = [
-        Expression(var, degree=2, t=0.0, p_VEN= 0.009,p_SAS = 0.018) for var in variables
-    ]  # Generate ufl varibles
 
-    (
-        my,
-        Lambda,
-        alpha,
-        c,
-        K,
-        fx,
-        fy,
-        pSkull,
-        pVentricles,
-        p_initial0,
-        p_initial1,
-        
-    ) = UFLvariables
-    f = as_vector((fx, fy))
-    U = as_vector((Expression("0.0", degree=2), Expression("0.0", degree=2)))
-    alpha = [1, alpha]
-    cj = [c]
-    K = [K]
-    p_init = [p_initial0, p_initial1]
-    T = 3
-    numTsteps = 300
 
-    source_scale = 1/1173670.5408281302 
-    g = [ReadSourceTerm(mesh,source_scale)]
-    
     boundary_conditionsU = {
         1: {"Dirichlet": U},
         2: {"NeumannWK": pVentricles},
@@ -128,6 +55,22 @@ def run_physical_2D_brain_WindkesselBC(n=20):
         (1, 2): {"RobinWK": (beta_VEN,pVentricles)},
         (1, 3): {"RobinWK": (beta_VEN,pVentricles)},
     }
+
+
+
+def run_physical_2D_brain_WindkesselBC(n=20):
+    
+
+    alpha = [1, alpha]
+    cj = [c]
+    K = [K]
+    p_init = [p_initial0, p_initial1]
+    T = 3
+    numTsteps = 300
+
+    source_scale = 1/1173670.5408281302 
+    g = [ReadSourceTerm(mesh,source_scale)]
+    
 
 #    boundary_conditionsP = { #Applying windkessel bc
 #        (1, 1): {"DirichletWK": pSkull},
@@ -464,7 +407,8 @@ class BoundaryChannel(SubDomain):
     def inside(self, x, on_boundary):
         tol = 1e-10
         return on_boundary and (near(x[0], -1, tol) or near(x[0], 1, tol))
-run_MPET_2D(20) 
+
+
 if __name__ == "__main__":
     n = 20
     run_MPET_2D(n)

@@ -1,7 +1,9 @@
+import os
+print(os.environ['PATH'])
+
+
 from fenics import *
 from mshr import Circle, Rectangle, generate_mesh
-
-
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -39,7 +41,7 @@ def generate_2D_brain_mesh_mm(n=16):
                 
 
     plot(mesh)
-    plt.show()
+    #plt.show()
     
     return mesh
 
