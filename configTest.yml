@@ -1,0 +1,31 @@
+# Standard Config file for MPET solver
+
+solver_settings:
+  log_level : 20
+  T : 3.0
+  num_T_steps : 360
+  OOC : False
+  BLR : False
+  linearize : True
+  element_type : TH
+
+
+material_parameters:
+  E : 1500 # Young modulus
+  nu : 0.479 # Poisson ratio
+  alpha : 1.0
+  kappa : 1.0e-16
+  c :   1.0e-6
+  rho : 1007
+
+source_data:
+  source_file : data/baladont_tot_inflow_series_shifted.csv
+  source_params:
+    f : 1.0
+  scaling : 1.0e-9 ## mm^3 to m^3
+  scale_by_total_vol : True
+spinal_outlet:
+  outlet_expression : "-P0*pow(10, outflow_vol / PVI)"
+  outlet_params :
+    PVI : 10.0e-6 # https://www.ncbi.nlm.nih.gov/pmc/articles/PMC3221868/, 30 ml
+initial_pressure : 600
