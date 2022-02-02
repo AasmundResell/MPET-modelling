@@ -33,28 +33,37 @@ def run_MPET_2D(n = 20):
     parsedValues = yaml.load(ymlFile, Loader=yaml.FullLoader)
     materialParameters = parsedValues['material_parameters']
     settings = parsedValues['solver_settings']
+    sourceParameters = parsedValues['source_data']
     
-    Solver2D = MPET(dim,numNetworks,mesh,**settings, **materialParameters) 
-
-    
-    Solver2D.printSetup()
-
-    Solver2D.problemSetup()
-
-
 
     boundary_conditionsU = {
         1: {"Dirichlet": U},
         2: {"NeumannWK": pVentricles},
         3: {"NeumannWK": pVentricles},
     }
-
+    
    
     boundary_conditionsP = { #Applying windkessel bc
         (1, 1): {"RobinWK": (beta_SAS,pSkull)},
         (1, 2): {"RobinWK": (beta_VEN,pVentricles)},
         (1, 3): {"RobinWK": (beta_VEN,pVentricles)},
     }
+
+
+    Solver2D = MPET(
+        dim,
+        numNetworks,
+        mesh,
+        *boundary_conditionsU,
+        *boundary_conditionsP,
+        **settings,
+        **materialParameters,
+        **sourceParameters)
+    
+    Solver2D.printSetup()
+
+    Solver2D.problemSetup()
+    ss = 1000
 
 
 
@@ -70,15 +79,6 @@ def run_physical_2D_brain_WindkesselBC(n=20):
 
     source_scale = 1/1173670.5408281302 
     g = [ReadSourceTerm(mesh,source_scale)]
-    
-
-#    boundary_conditionsP = { #Applying windkessel bc
-#        (1, 1): {"DirichletWK": pSkull},
-#        (1, 2): {"DirichletWK": pVentricles},
-#        (1, 3): {"DirichletWK": pVentricles},
-#    }
-
-
     
      
     u, p = biotMPET(
@@ -366,32 +366,6 @@ def run_physical_2D_brain_periodicBC_meter(n = 20):
     )
     
 
-def ReadSourceTerm(mesh,source_scale=1.0,periods = 3):
-    filestr = 'data/baladont_tot_inflow_series_shifted.csv'
-    g = TimeSeries("source_term")
-    Q = FunctionSpace(mesh,"CG",1)
-    time_period = 0.0
-    for i in range(periods):
-        #Read in the source term data
-        with open(filestr) as csv_file:
-            csv_reader = csv.reader(csv_file, delimiter=',')
-            line_count = 0
-            for row in csv_reader:
-                if line_count == 0:
-                   print(f'Column names are {", ".join(row)}')
-                   line_count += 1
-                else:
-                   print(float(row[1]))
-                   source = Constant(float(row[1])*source_scale) #Uniform source on the domain
-                   source = project(source, Q)
-                   g.store(source.vector(),float(row[0]) + i*time_period)
-                   print(f"\t timestep {row[0]} adding {row[1]} to the source.")
-                   line_count += 1
-            if i == 0:
-                time_period = float(row[0])
-                print("t =", time_period)
-            print(f'Processed {line_count} lines.')
-    return g
 
 
 class BoundaryOuter(SubDomain):

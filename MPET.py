@@ -7,9 +7,21 @@ from tabulate import tabulate
 
 
 class MPET:
-    def __init__(self,nDim,mesh,**kwargs):
+    def __init__(self,
+                 nDim,
+                 mesh,
+                 boundary_markers,
+                 boundary_conditionsU,
+                 boundary_conditionsP,
+                 **kwargs,
+        ):
         self.dim = nDim 
-        self.mesh = mesh
+        self.mesh = mesh        
+        self.boundary_markers = boundary_markers
+        self.boundary_conditionsU = boundary_conditionsU
+        self.boundary_conditionsP = boundary_conditionsP
+
+
         self.n_networks = kwargs.get("num_networks") 
         self.T = kwargs.get("T")
         self.numTsteps = kwargs.get("num_T_steps")
@@ -17,16 +29,17 @@ class MPET:
         self.nu = kwargs.get("nu")
         self.c = kwargs.get("c")
         self.element_type = kwargs.get("element_type")
+        self.f = kwargs.get("f")
+
         #For each network
         self.rho = kwargs.get("rho")
         self.mu = kwargs.get("mu")
         self.kappa = kwargs.get("kappa")
         self.alpha = kwargs.get("alpha")
-
         self.K = self.kappa/self.mu
+
         self.Lambda = self.nu*self.E/((1+self.nu)*(1-2*self.nu))
-        self.my = self.E/(2*(1+self.nu))
-        
+        self.my = self.E/(2*(1+self.nu))        
         self.conversionP = 133.32 #Pressure conversion: mmHg to Pa
 
         
@@ -78,20 +91,27 @@ class MPET:
         (
             self.my_UFL,
             self.Lambda_UFL,
-            self.alpha_UFL,
-            self.c_UFL,
-            self.K_UFL,
-            self.fx_UFL,
-            self.fy_UFL,
+            alpha1_UFL,
+            c1_UFL,
+            K1_UFL,
+            fx_UFL,
+            fy_UFL,
             self.pSkull_UFL,
             self.pVentricles_UFL,
-            self.p_initial0_UFL,
-            self.p_initial1_UFL,
+            p_initial0_UFL,
+            p_initial1_UFL,
         
         ) = UFLvariables
+        self.alpha_list = [1,alpha1_UFL]
+        self.c_list = [1,alpha1_UFL]
+        self.K_list = [1,alpha1_UFL]
+        self.p_init = [p_initial0_UFL, p_initial1_UFL]
+        
         self.f_UFL = as_vector((fx, fy))
         self.U_UFL = as_vector((Expression("0.0", degree=2), Expression("0.0", degree=2)))
-
+        source_scale = 1/1173670.5408281302 
+        self.g = [ReadSourceTerm(self.mesh,source_scale)]
+ 
     def printSetup(self):
 
         print("\n SOLVER SETUP\n")
@@ -123,27 +143,19 @@ class MPET:
 
         print("Generating UFL expressions\n")
         self.generateUFLexpressions()
-        boundary_conditionsU,
-        boundary_conditionsP,
-        boundary_markers,
-        g = [None],
         boundaryNum=1,
         p_initial=None,
-        transient=False,
-        WindkesselBC=False,
-        Compliance=None,
-        Resistance=None,
-        filesave = "solution_transient",
+        filesave = "solution_test",
 
 
-        ds = Measure("ds", domain=mesh, subdomain_data=boundary_markers)
-        n = FacetNormal(mesh)  # normal vector on the boundarylg
+        self.ds = Measure("ds", domain=self.mesh, subdomain_data=self.boundary_markers)
+        self.n = FacetNormal(self.mesh)  # normal vector on the boundarylg
         if not transient:
             dt = 0
             numTsteps = 1
             progress =  0
         elif transient:  # Will need to be saved during calculation
-            dt = T / numTsteps
+            self.dt = self.T / self.numTsteps
             # Add progress bar
             progress = Progress("Time-stepping", numTsteps)
             set_log_level(LogLevel.PROGRESS)
@@ -152,8 +164,6 @@ class MPET:
         xdmfP0 = XDMFFile(filesave + "/p0.xdmf")
         xdmfP1 = XDMFFile(filesave + "/p1.xdmf")        
         
-
-
         if WindkesselBC:
             p_VEN = p_initial[1].p_VEN
             p_SAS = p_initial[1].p_SAS
@@ -481,7 +491,7 @@ class MPET:
         return u, p
 
 
-    def update_t(expr, t):
+    def update_t(self,expr, t):
         if isinstance(expr, ufl.tensors.ComponentTensor):
             for dimexpr in expr.ufl_operands:
                 for op in dimexpr.ufl_operands:
@@ -497,7 +507,7 @@ class MPET:
             operand_update(expr, t)
 
             
-    def operand_update(expr, t):
+    def operand_update(self,expr, t):
         if isinstance(expr, ufl.algebra.Operator):
             for op in expr.ufl_operands:
                 update_operator(expr.ufl_operands, t)
@@ -505,4 +515,30 @@ class MPET:
             expr.t = t
 
 
+def ReadSourceTerm(mesh,source_scale=1.0,periods = 3):
+    filestr = 'data/baladont_tot_inflow_series_shifted.csv'
+    g = TimeSeries("source_term")
+    Q = FunctionSpace(mesh,"CG",1)
+    time_period = 0.0
+    for i in range(periods):
+        #Read in the source term data
+        with open(filestr) as csv_file:
+            csv_reader = csv.reader(csv_file, delimiter=',')
+            line_count = 0
+            for row in csv_reader:
+                if line_count == 0:
+                   print(f'Column names are {", ".join(row)}')
+                   line_count += 1
+                else:
+                   print(float(row[1]))
+                   source = Constant(float(row[1])*source_scale) #Uniform source on the domain
+                   source = project(source, Q)
+                   g.store(source.vector(),float(row[0]) + i*time_period)
+                   print(f"\t timestep {row[0]} adding {row[1]} to the source.")
+                   line_count += 1
+            if i == 0:
+                time_period = float(row[0])
+                print("t =", time_period)
+            print(f'Processed {line_count} lines.')
+    return g
 
