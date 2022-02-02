@@ -3,25 +3,27 @@
 solver_settings:
   log_level : 20
   T : 3.0
-  num_T_steps : 360
+  num_T_steps : 720
   num_networks : 1
-  OOC : False
-  BLR : False
-  linearize : True
   element_type : TH
   
 
 material_parameters:
   E : 1500 # Young modulus
   nu : 0.479 # Poisson ratio
-  alpha : 1.0
-  kappa : 4e-9 #[m²  to mm²] Permeability
-  c :   10e-6 #Storage coefficient
   rho : 1081 #Density of tissue
-  mu : 0.7e-3
+  kappa1 : 4.0e-9 #[m²  to mm²] Permeability fluid 1
+  alpha1 : 1.0 #Biot-Willis coefficient fluid 1
+  c1 :   10.0e-6 #Storage coefficient fluid 1 
+  mu_f1 : 0.7e-3 #Viscosity fluid 1
 
-
-
+boundary_parameters:
+  Compliance : 2.5 # [microL/mmHg]
+  Resistance : 10.81 # [mmHg*min/microL]
+  beta_sas : 0.1
+  beta_ven : 0.1
+  p_ven_initial : 0.0
+  p_sas_initial : 0.0
 
 source_data:
   source_file : data/baladont_tot_inflow_series_shifted.csv

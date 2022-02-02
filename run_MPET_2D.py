@@ -1,25 +1,41 @@
 import os
 print(os.environ['PATH'])
-
+import sys
+print(sys.executable)
 from meshes.brain_mesh_2D import generate_2D_brain_mesh_mm, generate_2D_brain_mesh_m
 #from meshes.read_brain_mesh_3D import read_brain_mesh_3D,read_brain_scale
 from ufl import FacetNormal, as_vector
 from dolfin import *
-import csv
 import yaml
+
 
 from MPET import MPET
 
 
-def run_MPET_2D(n = 20):
+class BoundaryOuter(SubDomain):
+    def inside(self, x, on_boundary):
+        return on_boundary
 
-    mesh = generate_2D_brain_mesh_mm(n)
+class BoundaryInner(SubDomain):
+    def inside(self, x, on_boundary):
+        tol = 1e-10
+        return on_boundary and  (x[0] ** 2 + x[1] ** 2) ** (1 / 2) <= 32
+
+class BoundaryChannel(SubDomain):
+    def inside(self, x, on_boundary):
+        tol = 1e-10
+        return on_boundary and (near(x[0], -1, tol) or near(x[0], 1, tol))
+
+def run_MPET_2D():
+
+    meshN = 20
+    mesh = generate_2D_brain_mesh_mm(meshN)
     n = FacetNormal(mesh)  # normal vector on the boundary
-
+    
     # Define boundary
     boundary_markers = MeshFunction("size_t", mesh, 1)
     boundary_markers.set_all(9999)
-
+    
     bx0 = BoundaryOuter()
     bx0.mark(boundary_markers, 1)  # Applies for all boundaries
     bx1 = BoundaryInner() 
@@ -27,14 +43,18 @@ def run_MPET_2D(n = 20):
     bx2 = BoundaryChannel()
     bx2.mark(boundary_markers, 3)  # Overwrites the channel ventricles boundary
 
-    dim = 2
-
     ymlFile = open("configTest.yml")
     parsedValues = yaml.load(ymlFile, Loader=yaml.FullLoader)
     materialParameters = parsedValues['material_parameters']
     settings = parsedValues['solver_settings']
     sourceParameters = parsedValues['source_data']
+    boundaryParameters = parsedValues['boundary_parameters']
     
+ 
+    U,pVentricles,pSkull = generateUFL_BCexpressions()
+    beta_VEN = boundaryParameters["beta_ven"]
+    beta_SAS = boundaryParameters["beta_sas"]
+
 
     boundary_conditionsU = {
         1: {"Dirichlet": U},
@@ -51,20 +71,53 @@ def run_MPET_2D(n = 20):
 
 
     Solver2D = MPET(
-        dim,
-        numNetworks,
         mesh,
-        *boundary_conditionsU,
-        *boundary_conditionsP,
+        boundary_markers,
+        boundary_conditionsU,
+        boundary_conditionsP,
         **settings,
         **materialParameters,
-        **sourceParameters)
+        **sourceParameters,
+        **boundaryParameters,
+    )
     
     Solver2D.printSetup()
 
-    Solver2D.problemSetup()
-    ss = 1000
+    Solver2D.solve()
 
+    
+def generateUFL_BCexpressions():
+    import sympy as sym
+    
+    t = sym.symbols("t")
+    
+    p_VEN = sym.symbols("p_VEN")
+    p_SAS = sym.symbols("p_SAS")
+    
+    pSkull = p_SAS
+    pVentricles = p_VEN
+    
+    symbols = [
+        pSkull,
+        pVentricles,
+    ]
+
+     
+    variables = [sym.printing.ccode(var) for var in symbols]  # Generate C++ code
+
+    
+    
+    UFLvariables = [
+        Expression(var, degree=2, t=0.0, p_VEN= 0.0,p_SAS = 0.0) for var in variables
+    ]  # Generate ufl varibles
+
+
+    (
+        pSkull_UFL,
+        pVentricles_UFL,
+    ) = UFLvariables
+    U_UFL = as_vector((Expression("0.0", degree=2), Expression("0.0", degree=2)))
+    return U_UFL, pSkull_UFL, pVentricles_UFL
 
 
 def run_physical_2D_brain_WindkesselBC(n=20):
@@ -368,23 +421,8 @@ def run_physical_2D_brain_periodicBC_meter(n = 20):
 
 
 
-class BoundaryOuter(SubDomain):
-    def inside(self, x, on_boundary):
-        return on_boundary
-
-class BoundaryInner(SubDomain):
-    def inside(self, x, on_boundary):
-        tol = 1e-10
-        return on_boundary and  (x[0] ** 2 + x[1] ** 2) ** (1 / 2) <= 32
-
-class BoundaryChannel(SubDomain):
-    def inside(self, x, on_boundary):
-        tol = 1e-10
-        return on_boundary and (near(x[0], -1, tol) or near(x[0], 1, tol))
-
 
 if __name__ == "__main__":
-    n = 20
-    run_MPET_2D(n)
+    run_MPET_2D()
 
     
