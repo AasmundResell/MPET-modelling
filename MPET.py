@@ -18,7 +18,7 @@ class MPET:
         self.boundary_markers = boundary_markers
         self.boundary_conditionsU = boundary_conditionsU
         self.boundary_conditionsP = boundary_conditionsP
-
+        
 
         self.numPnetworks = kwargs.get("num_networks") 
         self.T = kwargs.get("T")
@@ -30,12 +30,23 @@ class MPET:
         self.rho = kwargs.get("rho")
 
         #For each network
-        self.mu_f1 = kwargs.get("mu_f1")
-        self.kappa1 = kwargs.get("kappa1")
-        self.alpha1 = kwargs.get("alpha1")
-        self.K1 = self.kappa1/self.mu_f1
-        self.c1 = kwargs.get("c1")
+        self.mu_f = kwargs.get("mu_f")
+        print("mu_f:",self.mu_f)
+        self.kappa = kwargs.get("kappa")
+        self.alpha_val = kwargs.get("alpha")
+        self.c_val = kwargs.get("c")
+        self.p_initial_val = kwargs.get("p_initial")
+
+        self.K_val = []
+        for i in range(self.numPnetworks):
+            self.kappa[i] = self.kappa[i]*1e6 #m² to mm²
+            self.K_val.append(self.kappa[i]/self.mu_f[i])
         
+            
+        
+        self.sourceFile = kwargs.get("source_file")
+        self.g = [ReadSourceTerm(self.mesh,self.sourceFile),None,None]
+
         self.Lambda = self.nu*self.E/((1+self.nu)*(1-2*self.nu))
         self.mu = self.E/(2*(1+self.nu))        
         self.conversionP = 133.32 #Pressure conversion: mmHg to Pa
@@ -75,7 +86,9 @@ class MPET:
 
         xdmfU = XDMFFile(filesave + "/u.xdmf")
         xdmfP0 = XDMFFile(filesave + "/p0.xdmf")
-        xdmfP1 = XDMFFile(filesave + "/p1.xdmf")        
+        xdmfP = []
+        for i in range(self.numPnetworks):
+            xdmfP.append(XDMFFile(filesave + "/p" + str(i+1) + ".xdmf"))        
 
         p_VEN = self.p_BC_initial[0]
         p_SAS = self.p_BC_initial[1]
@@ -92,20 +105,20 @@ class MPET:
         
         
         # Generate function space
-        V = VectorElement("CG", self.mesh.ufl_cell(), 2, self.dim)  # Displacements
+        V = VectorElement(self.element_type, self.mesh.ufl_cell(), 2, self.dim)  # Displacements
         V_test = FunctionSpace(self.mesh, V)
 
-        Q_0 = FiniteElement("CG", self.mesh.ufl_cell(), 1)  # Total pressure
+        Q_0 = FiniteElement(self.element_type, self.mesh.ufl_cell(), 1)  # Total pressure
         mixedElement = []
         mixedElement.append(V)
         mixedElement.append(Q_0)
         for i in range(  self.numPnetworks):
-            Q = FiniteElement("CG", self.mesh.ufl_cell(), 1)
+            Q = FiniteElement(self.element_type, self.mesh.ufl_cell(), 1)
             mixedElement.append(Q)
 
         W_element = MixedElement(mixedElement)
         W = FunctionSpace(self.mesh, W_element)
-        
+
         test = TestFunction(W)
         q = split(test)  # q[0] = v, q[1],q[2],... = q_0,q_1,...
         
@@ -147,9 +160,6 @@ class MPET:
             return alpha / self.Lambda * dot(p, q) * dx
     
         def F(f, v):
-            print(type(f))
-            print(type(v))
-            
             return dot(f, v) * dx(self.mesh)
     
         # Assume displacements to be zero intially
@@ -377,7 +387,8 @@ class MPET:
 
             xdmfU.write(up.sub(0), t)
             xdmfP0.write(up.sub(1), t)
-            xdmfP1.write(up.sub(2), t)
+            for i in range(self.numPnetworks):
+                xdmfP[i].write(up.sub(i+2), t)
 
             up_n.assign(up)
             progress += 1
@@ -391,20 +402,20 @@ class MPET:
         for i in range(1, self.numPnetworks + 2):
             p.append(project(res[i], W.sub(i).collapse()))
 
-        if WindkesselBC:
-            fig1 = plt.figure(1)
-            plt.plot(t_vec, p_SAS_vec)
-            plt.title("Pressure in the subarachnoidal space")
-            fig2 = plt.figure(2)
-            plt.plot(t_vec, p_VEN_vec)
-            plt.title("Pressure in the brain ventricles")
-            fig3 = plt.figure(3)
-            plt.plot(t_vec, Q_SAS_vec)
-            plt.plot(t_vec, Q_VEN_vec)
-            plt.title("Fluid outflow of the brain parenchyma")
-            plt.show()
+        fig1 = plt.figure(1)
+        plt.plot(t_vec, p_SAS_vec)
+        plt.title("Pressure in the subarachnoidal space")
+        fig2 = plt.figure(2)
+        plt.plot(t_vec, p_VEN_vec)
+        plt.title("Pressure in the brain ventricles")
+        fig3 = plt.figure(3)
+        plt.plot(t_vec, Q_SAS_vec)
+        plt.plot(t_vec, Q_VEN_vec)
+        plt.title("Fluid outflow of the brain parenchyma")
+        plt.show()
 
-        return u, p
+        self.u_sol = u
+        self.p_sol = p
 
     def generateUFLexpressions(self):
         import sympy as sym
@@ -412,24 +423,16 @@ class MPET:
         t = sym.symbols("t")
 
         fx = 0.0 #self.f_val  # force term y-direction
-        fy = 0.0 #self.f_val  # force term y-direction
+        fy = 0.0 #self.f_val  # force term y-
+        p_initial0 =  sum([-x*y for x,y in zip(self.alpha_val,self.p_initial_val)])
 
-        
-        p_initial1 = 0.0
-        p_initial0 = -self.alpha1*p_initial1
-        
-
-        
+ 
         variables = [
             self.mu,
             self.Lambda,
-            self.alpha1,
-            self.c1,
-            self.K1,
             fx,
             fy,
             p_initial0,
-            p_initial1,
         ]
 
         variables = [sym.printing.ccode(var) for var in variables]  # Generate C++ code
@@ -442,23 +445,50 @@ class MPET:
         (
             self.my_UFL,
             self.Lambda_UFL,
-            alpha1_UFL,
-            c1_UFL,
-            K1_UFL,
             fx_UFL,
             fy_UFL,
             p_initial0_UFL,
-            p_initial1_UFL,
         ) = UFLvariables
-        self.alpha = [1,alpha1_UFL]
-        self.c = [c1_UFL]
-        self.K = [K1_UFL]
-        self.p_initial = [p_initial0_UFL, p_initial1_UFL]
-        
+
         self.f = as_vector((fx, fy))
 
-        source_scale = 1/1173670.5408281302 
-        self.g = [ReadSourceTerm(self.mesh,source_scale)]
+        self.p_initial = []
+        self.alpha = []
+        self.c = []
+        self.K = []
+
+        #For total pressure
+        self.p_initial.append(p_initial0_UFL)
+        self.alpha.append(1) 
+
+        #For each network
+        for i in range(self.numPnetworks):
+            variables = [
+                self.alpha_val[i],
+                self.c_val[i],
+                self.K_val[i],
+                self.p_initial_val[i]
+            ]
+
+            variables = [sym.printing.ccode(var) for var in variables]  # Generate C++ code
+
+            UFLvariables = [
+                Expression(var, degree=1, t=0.0 ) for var in variables
+            ]  # Generate ufl varibles
+            
+            (
+                alpha_UFL,
+                c_UFL,
+                K_UFL,
+                p_initial_UFL,
+            ) = UFLvariables
+
+            self.c.append(c_UFL)
+            self.K.append(K_UFL)
+            self.alpha.append(alpha_UFL)
+            self.p_initial.append(p_initial_UFL)
+        
+         
  
     def printSetup(self):
 
@@ -476,10 +506,10 @@ class MPET:
         print(tabulate([['Young Modulus', self.E, 'Pa'],
                         ['nu', self.nu],
                         ['rho', self.rho],
-                        ['c1', self.c1],
-                        ['kappa1', self.kappa1, 'mm^2'],
-                        ['mu_f1', self.mu_f1],
-                        ['alpha1', self.alpha1]],
+                        ['c', self.c_val],
+                        ['kappa', self.kappa, 'mm^2'],
+                        ['mu_f', self.mu_f],
+                        ['alpha1', self.alpha_val]],
                        headers=['Parameter', 'Value', 'Unit']))
 
 
@@ -514,12 +544,12 @@ class MPET:
                 update_operator(expr.ufl_operands, t)
         elif isinstance(expr, ufl.Coefficient):
             expr.t = t
+            
 
-
-def ReadSourceTerm(mesh,source_scale=1.0,periods = 3):
+def ReadSourceTerm(mesh,filestr,periods = 3):
     import csv
-    filestr = 'data/baladont_tot_inflow_series_shifted.csv'
     g = TimeSeries("source_term")
+    source_scale = 1/1173670.5408281302 
     Q = FunctionSpace(mesh,"CG",1)
     time_period = 0.0
     for i in range(periods):
