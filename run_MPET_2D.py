@@ -43,7 +43,7 @@ def run_MPET_2D():
     bx2 = BoundaryChannel()
     bx2.mark(boundary_markers, 3)  # Overwrites the channel ventricles boundary
 
-    ymlFile = open("configTest_3n.yml")
+    ymlFile = open("configTest.yml")
     parsedValues = yaml.load(ymlFile, Loader=yaml.FullLoader)
     materialParameters = parsedValues['material_parameters']
     settings = parsedValues['solver_settings']
@@ -55,21 +55,24 @@ def run_MPET_2D():
     beta_VEN = boundaryParameters["beta_ven"]
     beta_SAS = boundaryParameters["beta_sas"]
 
-
+    #Generate boundary conditions for the displacements
+    #The integer keys represents a boundary (marker)
     boundary_conditionsU = {
         1: {"Dirichlet": U},
         2: {"NeumannWK": pVentricles},
         3: {"NeumannWK": pVentricles},
     }
     
-   
+    #Generate boundary conditions for the fluid pressures
+    #Indice 1 in the touple key represents the fluid network
+    #Indice 2 in the touple key represents a boundary (marker)
     boundary_conditionsP = { #Applying windkessel bc
-        (1, 1): {"RobinWK": (beta_SAS,pSkull)},
-        (1, 2): {"RobinWK": (beta_VEN,pVentricles)},
-        (1, 3): {"RobinWK": (beta_VEN,pVentricles)},
-        (2, 1): {"RobinWK": (beta_SAS,pSkull)},
-        (2, 2): {"RobinWK": (beta_VEN,pVentricles)},
-        (2, 3): {"RobinWK": (beta_VEN,pVentricles)},
+        (1, 1): {"Neumann": 0}, 
+        (1, 2): {"Neumann": 0},
+        (1, 3): {"Neumann": 0},
+        (2, 1): {"Dirichlet": Constant("0.0")},
+        (2, 2): {"Neumann": 0},
+        (2, 3): {"Neumann": 0},
         (3, 1): {"RobinWK": (beta_SAS,pSkull)},
         (3, 2): {"RobinWK": (beta_VEN,pVentricles)},
         (3, 3): {"RobinWK": (beta_VEN,pVentricles)},
