@@ -43,7 +43,7 @@ def run_MPET_2D():
     bx2 = BoundaryChannel()
     bx2.mark(boundary_markers, 3)  # Overwrites the channel ventricles boundary
 
-    ymlFile = open("configTest.yml")
+    ymlFile = open("Test_3Network.yml") 
     parsedValues = yaml.load(ymlFile, Loader=yaml.FullLoader)
     materialParameters = parsedValues['material_parameters']
     settings = parsedValues['solver_settings']

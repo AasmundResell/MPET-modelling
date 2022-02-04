@@ -2,8 +2,8 @@
 
 solver_settings:
   log_level : 20
-  T : 3.0
-  num_T_steps : 100
+  T : 6.0
+  num_T_steps : 200
   num_networks : 3
   element_type : CG
   
@@ -29,19 +29,16 @@ material_parameters:
     - 2.67e-3 #Viscosity fluid 2
     - 6.97e-4 #Viscosity fluid 3
   p_initial :
-    - 0.0 #Initial pressure network 1
-    - 0.0 #Initial pressure network 2
-    - 0.0 #Initial pressure network 3
+    - 0.4 #Initial pressure network 1
+    - -1.5 #Initial pressure network 2
+    - 0.58 #Initial pressure network 3
   gamma :
-    gamma_1:
     - 0 #1/(Pa*s) Transfer network: 1-1
     - 1.0e-3 #1/(Pa*s) Transfer network: 1-2
     - 1.0e-4 #1/(Pa*s) Transfer network: 1-3
-    gamma_2:
     - 1.0e-3 #1/(Pa*s) Transfer network: 2-1
     - 0 #1/(Pa*s) Transfer network: 2-2
     - 0 #1/(Pa*s) Transfer network: 2-3
-    gamma_3:
     - 1.0e-4 #1/(Pa*s) Transfer network: 3-1
     - 0 #1/(Pa*s) Transfer network: 3-2
     - 0 #1/(Pa*s) Transfer network: 3-3
@@ -52,8 +49,8 @@ boundary_parameters:
   Resistance : 10.81 # [mmHg*min/mL]
   beta_sas : 1.0e-5
   beta_ven : 1.0e-5
-  p_ven_initial : 0.0
-  p_sas_initial : 0.0
+  p_ven_initial : -0.2
+  p_sas_initial : 10.0
 
 source_data:
   source_file : data/baladont_tot_inflow_series_shifted.csv

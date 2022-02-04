@@ -28,22 +28,28 @@ class MPET:
         self.element_type = kwargs.get("element_type")
         self.f_val = kwargs.get("f")
         self.rho = kwargs.get("rho")
-        self.gamma = kwargs.get("gamma")
-        print("gamma:",self.gamma)
+
+        
         #For each network
         self.mu_f = kwargs.get("mu_f")
         print("mu_f:",self.mu_f)
         self.kappa = kwargs.get("kappa")
         self.alpha_val = kwargs.get("alpha")
         self.c_val = kwargs.get("c")
-        self.p_initial_val = kwargs.get("p_initial")
-        
+        self.p_initial = kwargs.get("p_initial")
+        p_initial0 =  sum([-x*y for x,y in zip(self.alpha_val,self.p_initial)])
+        self.p_initial.insert(0,p_initial0)
+        self.gamma = np.reshape(kwargs.get("gamma"),(self.numPnetworks,self.numPnetworks))
+        print("gamma:",self.gamma)
         self.K_val = []
 
+        
+
+        
         #Ensure lists
         if not isinstance(self.alpha_val,list): self.alpha_val = [self.alpha_val]
         if not isinstance(self.c_val,list): self.c_val = [self.c_val]
-        if not isinstance(self.p_initial_val,list): self.p_initial_val = [self.p_initial_val]
+        if not isinstance(self.p_initial,list): self.p_initial = [self.p_initial]
         if not isinstance(self.kappa,list): self.kappa= [self.kappa] 
         if not isinstance(self.mu_f,list): self.mu_f = [self.mu_f]
 
@@ -53,7 +59,7 @@ class MPET:
             
         
         self.sourceFile = kwargs.get("source_file")
-        self.g = [ReadSourceTerm(self.mesh,self.sourceFile,inflow = "Brutto"),None,None]
+        self.g = [ReadSourceTerm(self.mesh,self.sourceFile,self.T,inflow = "Netto"),None,None]
 
         self.Lambda = self.nu*self.E/((1+self.nu)*(1-2*self.nu))
         self.mu = self.E/(2*(1+self.nu))        
@@ -93,10 +99,18 @@ class MPET:
         set_log_level(LogLevel.PROGRESS)
 
         xdmfU = XDMFFile(filesave + "/u.xdmf")
+        xdmfU.parameters["flush_output"]=True
+        
+
+
         xdmfP0 = XDMFFile(filesave + "/p0.xdmf")
+        xdmfP0.parameters["flush_output"]=True
+
         xdmfP = []
         for i in range(self.numPnetworks):
             xdmfP.append(XDMFFile(filesave + "/p" + str(i+1) + ".xdmf"))        
+            xdmfP[i].parameters["flush_output"]=True
+
 
         p_VEN = self.p_BC_initial[0]
         p_SAS = self.p_BC_initial[1]
@@ -197,10 +211,11 @@ class MPET:
                     (1 / dt)
                     * (
                         self.c[i] * p_[i + 2]
-                        + self.alpha[i] / self.Lambda * sum(a * b for a, b in zip(self.alpha, p_[1:]))
+                        + self.alpha[i+1] / self.Lambda * sum(a * b for a, b in zip(self.alpha, p_[1:]))
                         )
-                )
                 * q[i + 2]
+                
+                )
                 * dx
             )
             timeD_n.append(
@@ -208,35 +223,66 @@ class MPET:
                     (1 / dt)
                     * (
                         self.c[i] * p_n[i + 2]
-                        + self.alpha[i] / self.Lambda * sum(a * b for a, b in zip(self.alpha, p_n[1:]))
+                        + self.alpha[i+1] / self.Lambda * sum(a * b for a, b in zip(self.alpha, p_n[1:]))
                     )
                 )
                 * q[i + 2]
                 * dx
             )
 
-        #Add transfer terms
-        for i in range(self.numPnetworks): 
-            for j in range(self.numPnetworks):
-                transfer.append(self.gamma[i][j]*(p_[i+2]-p_[j+2])*q[i+2])
-    
+        if self.gamma.any(): #Add transfer terms
+            print("Adding transfer terms")
+            for i in range(self.numPnetworks): 
+                for j in range(self.numPnetworks):
+                    if self.gamma[i,j]:
+                        transfer.append(self.gamma[i,j]*(p_[i+2]-p_[j+2])*q[i+2]*dx)
         dotProdP = [c(alpha,p, q[1]) for alpha,p in zip(self.alpha, p_[1:])]
 
+        DIMCLASS = self.dim + self.numPnetworks +1
 
-        for i in range(2, self.numPnetworks):
+        # Class representing the intial conditions
+        class InitialConditions(UserExpression):
+            def __init__(self,networks,dimensions,p_initial):
+                super().__init__(degree=networks + dimensions + 1)
+                self.N = networks
+                self.DIM = dimensions
+                self.P_init = p_initial
+
+            def eval(self, values, x):
+                
+                for d in range(self.DIM): #For each dimension
+                    values[d] = 0.0
+                values[0] = 0.0
+                values[1] = 0.0
+                values[self.DIM + 1] = self.P_init[0] #Total pressure
+
+                for n in range(self.N): #For each network
+                    values[self.DIM + 1 + n] = self.P_init[n+1]
+                    
+            def value_shape(self):
+                return (DIMCLASS,)
+
+        u_init = InitialConditions(self.numPnetworks,self.dim,self.p_initial)
+        up_n.interpolate(u_init)
+        #p_.interpolate(u_init)
+        #for i in range(1, self.numPnetworks+1):
             # Apply inital pressure
-            up_n.sub(i).assign(interpolate(self.p_initial[i - 1], W.sub(i).collapse()))
-        up_n.sub(1).assign(
-            interpolate(self.p_initial[0], W.sub(1).collapse())
-        )  # Apply intial total pressure
+        #    up_n.sub(i+1).assign(interpolate(self.p_initial[i], W.sub(i+1).collapse()))
+            #trial.sub(i+1).assign(interpolate(self.p_initial[i], W.sub(i+1).collapse()))
+
+        #up_n.sub(1).assign(
+        #    interpolate(self.p_initial[0], W.sub(1).collapse())
+        #)  # Apply intial total pressure
 
         
-        self.applyPressureBC(n,ds,p_,q)
+        self.applyPressureBC(n,ds,W,p_,q)
         self.applyDisplacementBC(n,W,ds,q)
 
-        
-        
-
+        for i in innerProdP:
+            print(type(i))
+        for t in timeD_:
+            print(type(t))
+            
         lhs = (
             a_u(p_[0], q[0])
             + b(p_[1], q[0])
@@ -337,64 +383,64 @@ class MPET:
         self.p_sol = p
 
 
-    def applyPressureBC(self,n,ds,p_,q):
+    def applyPressureBC(self,n,ds,W,p_,q):
         
-        for i in range(self.numPnetworks):  # apply for each network
+        for i in range(1,self.numPnetworks+1):  # apply for each network
             print("Network: ", i)    
             for j in range(1, self.boundaryNum + 1):  # for each boundary
                 print("Boundary: ", j)
-                if "Dirichlet" in self.boundary_conditionsP[(i + 1, j)]:
+                if "Dirichlet" in self.boundary_conditionsP[(i, j)]:
                     print(
                         "Applying Dirichlet BC for pressure network: %i and boundary surface %i "
-                        % (i + 1, j)
+                        % (i, j)
                     )
-                    expr = self.boundary_conditionsP[(i + 1, j)]["Dirichlet"]
+                    expr = self.boundary_conditionsP[(i, j)]["Dirichlet"]
                     bcp = DirichletBC(
-                        W.sub(i + 2),
+                        W.sub(i + 1),
                         expr,
                         self.boundary_markers,
                         j,
                     )
                     self.bcs_D.append(bcp)
                     self.time_expr.append(expr)
-                elif "DirichletWK" in self.boundary_conditionsP[(i + 1, j)]:
+                elif "DirichletWK" in self.boundary_conditionsP[(i, j)]:
                     print(
                         "Applying Dirichlet Windkessel BC for pressure network: %i and boundary surface %i "
-                        % (i + 1, j)
+                        % (i, j)
                     )
-                    expr = self.boundary_conditionsP[(i + 1, j)]["DirichletWK"]
+                    expr = self.boundary_conditionsP[(i, j)]["DirichletWK"]
                     bcp = DirichletBC(
-                        W.sub(i + 2),
+                        W.sub(i + 1),
                         expr,
                         self.boundary_markers,
                         j,
                     )
                     self.bcs_D.append(bcp)
                     self.windkessel_terms.append(expr)
-                elif "Robin" in self.boundary_conditionsP[(i + 1, j)]:
+                elif "Robin" in self.boundary_conditionsP[(i, j)]:
                     print("Applying Robin BC for pressure")
                     print("Applying Robin LHS")
-                    beta, P_r = self.boundary_conditionsP[(i + 1, j)]["Robin"]
-                    self.integrals_R_L.append(inner(beta * p_[i + 2], q[i + 2]) * ds(j))
+                    beta, P_r = self.boundary_conditionsP[(i, j)]["Robin"]
+                    self.integrals_R_L.append(inner(beta * p_[i + 1], q[i + 1]) * ds(j))
                     if P_r:
                         print("Applying Robin RHS")
-                        self.integrals_R_R.append(inner(beta * P_r, q[i + 2]) * ds(j))
+                        self.integrals_R_R.append(inner(beta * P_r, q[i + 1]) * ds(j))
                         self.time_expr.append(P_r)
-                elif "RobinWK" in self.boundary_conditionsP[(i + 1, j)]:
+                elif "RobinWK" in self.boundary_conditionsP[(i, j)]:
                     print("Applying Robin BC with Windkessel referance pressure")
-                    beta, P_r = self.boundary_conditionsP[(i + 1, j)]["RobinWK"]
+                    beta, P_r = self.boundary_conditionsP[(i, j)]["RobinWK"]
                         
                     print("Applying Robin LHS")
-                    self.integrals_R_L.append(inner(beta * p_[i + 2], q[i + 2]) * ds(j))
+                    self.integrals_R_L.append(inner(beta * p_[i + 1], q[i + 1]) * ds(j))
 
                     print("Applying Robin RHS")
-                    self.integrals_R_R.append(inner(beta * P_r, q[i + 2]) * ds(j))
+                    self.integrals_R_R.append(inner(beta * P_r, q[i + 1]) * ds(j))
                     self.windkessel_terms.append(P_r)
-                elif "Neumann" in self.boundary_conditionsP[(i+1,j)]:
-                    if self.boundary_conditionsP[i]["Neumann"] != 0:
+                elif "Neumann" in self.boundary_conditionsP[(i,j)]:
+                    if self.boundary_conditionsP[(i,j)]["Neumann"] != 0:
                         print("Applying Neumann BC.")
-                        N = self.boundary_conditionsP[(i+1,j)]["Neumann"]
-                        self.integrals_N.append(inner(-n * N, q[i+2]) * ds(j))
+                        N = self.boundary_conditionsP[(i,j)]["Neumann"]
+                        self.integrals_N.append(inner(-n * N, q[i+1]) * ds(j))
                         self.time_expr.append(N)
 
 
@@ -436,7 +482,7 @@ class MPET:
 
         fx = 0.0 #self.f_val  # force term y-direction
         fy = 0.0 #self.f_val  # force term y-
-        p_initial0 =  sum([-x*y for x,y in zip(self.alpha_val,self.p_initial_val)])
+        #p_initial0 =  sum([-x*y for x,y in zip(self.alpha_val,self.p_initial_val)])
 
  
         variables = [
@@ -444,7 +490,7 @@ class MPET:
             self.Lambda,
             fx,
             fy,
-            p_initial0,
+            #p_initial0,
         ]
 
         variables = [sym.printing.ccode(var) for var in variables]  # Generate C++ code
@@ -459,19 +505,19 @@ class MPET:
             self.Lambda_UFL,
             fx_UFL,
             fy_UFL,
-            p_initial0_UFL,
+            #p_initial0_UFL,
         ) = UFLvariables
 
         self.f = as_vector((fx, fy))
 
-        self.p_initial = []
+        #self.p_initial = []
         self.alpha = []
         self.c = []
         self.K = []
 
         #For total pressure
-        self.p_initial.append(p_initial0_UFL)
-        self.alpha.append(1) 
+        #self.p_initial.append(p_initial0_UFL)
+        self.alpha.append(Constant(1.0)) 
 
         #For each network
         for i in range(self.numPnetworks):
@@ -479,7 +525,7 @@ class MPET:
                 self.alpha_val[i],
                 self.c_val[i],
                 self.K_val[i],
-                self.p_initial_val[i]
+                #self.p_initial_val[i]
             ]
 
             variables = [sym.printing.ccode(var) for var in variables]  # Generate C++ code
@@ -492,13 +538,13 @@ class MPET:
                 alpha_UFL,
                 c_UFL,
                 K_UFL,
-                p_initial_UFL,
+                #p_initial_UFL,
             ) = UFLvariables
 
             self.c.append(c_UFL)
             self.K.append(K_UFL)
             self.alpha.append(alpha_UFL)
-            self.p_initial.append(p_initial_UFL)
+            #self.p_initial.append(p_initial_UFL)
         
          
  
@@ -559,7 +605,7 @@ class MPET:
             expr.t = t
             
 
-def ReadSourceTerm(mesh,filestr,periods = 3,inflow = "Netto"):
+def ReadSourceTerm(mesh,filestr,periods,inflow = "Netto"):
     import csv
     g = TimeSeries("source_term")
     source_scale = 1/1173670.5408281302
@@ -570,7 +616,7 @@ def ReadSourceTerm(mesh,filestr,periods = 3,inflow = "Netto"):
         offset = 0.0
     Q = FunctionSpace(mesh,"CG",1)
     time_period = 0.0
-    for i in range(periods):
+    for i in range(int(periods)):
         #Read in the source term data
         with open(filestr) as csv_file:
             csv_reader = csv.reader(csv_file, delimiter=',')
