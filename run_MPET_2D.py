@@ -28,7 +28,15 @@ class BoundaryChannel(SubDomain):
 
 def run_MPET_2D():
 
-    meshN = 10
+    ymlFile = open("Test_3Network.yml") 
+    parsedValues = yaml.load(ymlFile, Loader=yaml.FullLoader)
+    materialParameters = parsedValues['material_parameters']
+    settings = parsedValues['solver_settings']
+    sourceParameters = parsedValues['source_data']
+    boundaryParameters = parsedValues['boundary_parameters']
+    
+ 
+    meshN = settings["mesh_resolution"]
     mesh = generate_2D_brain_mesh_mm(meshN)
     n = FacetNormal(mesh)  # normal vector on the boundary
     
@@ -43,14 +51,6 @@ def run_MPET_2D():
     bx2 = BoundaryChannel()
     bx2.mark(boundary_markers, 3)  # Overwrites the channel ventricles boundary
 
-    ymlFile = open("Test_3Network.yml") 
-    parsedValues = yaml.load(ymlFile, Loader=yaml.FullLoader)
-    materialParameters = parsedValues['material_parameters']
-    settings = parsedValues['solver_settings']
-    sourceParameters = parsedValues['source_data']
-    boundaryParameters = parsedValues['boundary_parameters']
-    
- 
     U,pVentricles,pSkull = generateUFL_BCexpressions()
     beta_VEN = boundaryParameters["beta_ven"]
     beta_SAS = boundaryParameters["beta_sas"]

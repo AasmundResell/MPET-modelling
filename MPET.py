@@ -29,7 +29,6 @@ class MPET:
         self.f_val = kwargs.get("f")
         self.rho = kwargs.get("rho")
 
-        
         #For each network
         self.mu_f = kwargs.get("mu_f")
         print("mu_f:",self.mu_f)
@@ -88,11 +87,32 @@ class MPET:
         filesave = "solution_test"
         
         
+        DIMCLASS = self.dim + self.numPnetworks +1 #For InitialConditions class
+        # Class representing the intial conditions
+        class InitialConditions(UserExpression):
+            def __init__(self,networks,dimensions,p_initial):
+                super().__init__(degree=networks + dimensions + 1)
+                self.N = networks
+                self.DIM = dimensions
+                self.P_init = p_initial
+
+            def eval(self, values, x):
+                for d in range(self.DIM): #For each dimension
+                    values[d] = 0.0
+
+                values[self.DIM + 1] = self.P_init[0] #Total pressure
+
+                for n in range(self.N): #For each network
+                    values[self.DIM + 1 + n] = self.P_init[n+1]
+
+            def value_shape(self):
+                return (DIMCLASS,)
+ 
 
         ds = Measure("ds", domain=self.mesh, subdomain_data=self.boundary_markers)
         n = FacetNormal(self.mesh)  # normal vector on the boundary
 
-        dt = self.T / self.numTsteps
+        self.dt = self.T / self.numTsteps
 
         # Add progress bar
         progress = Progress("Time-stepping", self.numTsteps)
@@ -120,10 +140,16 @@ class MPET:
         print("P_SAS =,", p_SAS)
         # Storing values for plotting
         t_vec = np.zeros(self.numTsteps)
+        dV_vec = np.zeros(self.numTsteps)
         p_SAS_vec = np.zeros(self.numTsteps)
         p_VEN_vec = np.zeros(self.numTsteps)
-        Q_SAS_vec = np.zeros(self.numTsteps)
-        Q_VEN_vec = np.zeros(self.numTsteps)
+
+        Q_SAS_VEC = []
+        Q_VEN_VEC = []
+
+        for i in range(self.numPnetworks): #Generate fluid outflow vectors
+            Q_SAS_VEC.append(np.zeros(self.numTsteps)) 
+            Q_VEN_VEC.append(np.zeros(self.numTsteps))
         
         
         # Generate function space
@@ -184,10 +210,19 @@ class MPET:
     
         def c(alpha, p, q):
             return alpha / self.Lambda * dot(p, q) * dx
- 
+
+        def d(p,q,numP): #Time derivatives
+            # network pressure change
+            dp  = self.c[numP] * p_[numP + 2]
+
+            # volumetric strain
+            deps  = self.alpha[numP+1] / self.Lambda * sum(a * b for a, b in zip(self.alpha, p_[1:])) 
+            return (1 / self.dt)*(dp + deps) * q[numP + 2] * dx
+                
         def F(f, v):
             return dot(f, v) * dx(self.mesh)
-       
+
+        
         #Apply terms for each fluid network
         for i in range(self.numPnetworks):  # apply for each network
             if isinstance(
@@ -205,31 +240,11 @@ class MPET:
 
             innerProdP.append(a_p(self.K[i], p_[i + 2], q[i + 2]))  # Applying diffusive termlg
 
-            # Applying time derivative
-            timeD_.append(
-                (
-                    (1 / dt)
-                    * (
-                        self.c[i] * p_[i + 2]
-                        + self.alpha[i+1] / self.Lambda * sum(a * b for a, b in zip(self.alpha, p_[1:]))
-                        )
-                * q[i + 2]
-                
-                )
-                * dx
-            )
-            timeD_n.append(
-                (
-                    (1 / dt)
-                    * (
-                        self.c[i] * p_n[i + 2]
-                        + self.alpha[i+1] / self.Lambda * sum(a * b for a, b in zip(self.alpha, p_n[1:]))
-                    )
-                )
-                * q[i + 2]
-                * dx
-            )
+            # Applying time derivatives
+            timeD_.append(d(p_,q,i)) #lhs
+            timeD_n.append(d(p_n,q,i)) #rhs
 
+                
         if self.gamma.any(): #Add transfer terms
             print("Adding transfer terms")
             for i in range(self.numPnetworks): 
@@ -238,51 +253,15 @@ class MPET:
                         transfer.append(self.gamma[i,j]*(p_[i+2]-p_[j+2])*q[i+2]*dx)
         dotProdP = [c(alpha,p, q[1]) for alpha,p in zip(self.alpha, p_[1:])]
 
-        DIMCLASS = self.dim + self.numPnetworks +1
 
-        # Class representing the intial conditions
-        class InitialConditions(UserExpression):
-            def __init__(self,networks,dimensions,p_initial):
-                super().__init__(degree=networks + dimensions + 1)
-                self.N = networks
-                self.DIM = dimensions
-                self.P_init = p_initial
-
-            def eval(self, values, x):
-                
-                for d in range(self.DIM): #For each dimension
-                    values[d] = 0.0
-                values[0] = 0.0
-                values[1] = 0.0
-                values[self.DIM + 1] = self.P_init[0] #Total pressure
-
-                for n in range(self.N): #For each network
-                    values[self.DIM + 1 + n] = self.P_init[n+1]
-                    
-            def value_shape(self):
-                return (DIMCLASS,)
 
         u_init = InitialConditions(self.numPnetworks,self.dim,self.p_initial)
         up_n.interpolate(u_init)
-        #p_.interpolate(u_init)
-        #for i in range(1, self.numPnetworks+1):
-            # Apply inital pressure
-        #    up_n.sub(i+1).assign(interpolate(self.p_initial[i], W.sub(i+1).collapse()))
-            #trial.sub(i+1).assign(interpolate(self.p_initial[i], W.sub(i+1).collapse()))
-
-        #up_n.sub(1).assign(
-        #    interpolate(self.p_initial[0], W.sub(1).collapse())
-        #)  # Apply intial total pressure
 
         
         self.applyPressureBC(n,ds,W,p_,q)
         self.applyDisplacementBC(n,W,ds,q)
-
-        for i in innerProdP:
-            print(type(i))
-        for t in timeD_:
-            print(type(t))
-            
+ 
         lhs = (
             a_u(p_[0], q[0])
             + b(p_[1], q[0])
@@ -292,10 +271,14 @@ class MPET:
             + sum(transfer)
             + sum(self.integrals_R_L)
             + sum(timeD_)
-        )
+        ) 
 
         rhs = (
-            F(self.f, q[0]) + sum(sources) + sum(timeD_n) + sum(self.integrals_N) + sum(self.integrals_R_R)
+            F(self.f, q[0])
+            + sum(sources)
+            + sum(timeD_n)
+            + sum(self.integrals_N)
+            + sum(self.integrals_R_R)
         )
 
         [self.time_expr.append(self.f[i]) for i in range(self.dim)]
@@ -307,54 +290,52 @@ class MPET:
         
 
         for i in range(self.numTsteps):
-            t += dt
-            for expr in self.time_expr:  # Update all time dependent terms
-                self.update_t(expr, t)
+            t += self.dt
 
+            self.update_time_expr(t)# Update all time dependent terms
+            
             b = assemble(rhs)
             for bc in self.bcs_D:
                 #            update_t(bc, t)
                 bc.apply(b)
 
-            solve(A, up.vector(), b)
-            
+            solve(A, up.vector(), b) #Solve system
 
-            #K is chosen based on the network that is in direct contact with the CSF compartments
-            Q_SAS = assemble(-self.K[0] * dot(grad(up.sub(2)), n) * ds(1))
-            Q_VEN = assemble(-self.K[0] * dot(grad(up.sub(2)), n) * ds(2)) + assemble(
-                -self.K[0] * dot(grad(up.sub(2)), n) * ds(3)
-            )
-            p_SAS_vec[i] = p_SAS
-            p_VEN_vec[i] = p_VEN
-            t_vec[i] = t
-            Q_SAS_vec[i] = Q_SAS
-            Q_VEN_vec[i] = Q_VEN
-                
-            print("Outflow SAS at t=%.2f is Q_SAS=%.10f " % (t, Q_SAS_vec[i]))
-            print("Outflow VEN at t=%.2f is Q_VEN=%.10f " % (t, Q_VEN_vec[i]))
-            p_SAS_next = 1 / self.C * (dt * Q_SAS + (self.C - dt / self.R) * p_SAS)
-            p_VEN_next = 1 / self.C * (dt * Q_VEN + (self.C - dt / self.R) * p_VEN)
+            #Write solution at time t
+            xdmfU.write(up.sub(0), t)
+            xdmfP0.write(up.sub(1), t)
+            for j in range(self.numPnetworks):
+                xdmfP[j].write(up.sub(i+2), t)
+
+                #Calculate outflow for each network
+                Q_SAS_VEC[j][i] = assemble(-self.K[j] * dot(grad(up.sub(j+2)), n) * ds(1))
+                Q_VEN_VEC[j][i] = assemble(-self.K[j] * dot(grad(up.sub(j+2)), n) * ds(2)) + assemble(
+                -self.K[j] * dot(grad(up.sub(j+2)), n) * ds(3))
+
+
+            dV_vec[i] = assemble(dot(up.sub(0),n)*ds)
+
+
+
+
+            #Assume both flow from capillaries and ECS flow out to the CSF filled cavities
+            Q_SAS = Q_SAS_VEC[0][i] + Q_SAS_VEC[2][i]
+            Q_VEN = Q_VEN_VEC[0][i] + Q_VEN_VEC[2][i]
+
+            p_SAS_next, p_SAS_next = self.windkessel_model(Q_SAS,Q_VEN,p_SAS,p_VEN)
             
-            print("Pressure for SAS: ", p_SAS_next)
-            print("Pressure for VEN: ", p_VEN_next)
-                
-            for expr in self.windkessel_terms:
-                try:
-                    expr.p_SAS = p_SAS_next
-                    expr.p_VEN = p_VEN_next
-                except:
-                    try:
-                        expr.p_SAS = p_SAS_next
-                    except:
-                        expr.p_VEN = p_VEN_next
+            p_SAS_vec[i] = p_SAS_next
+            p_VEN_vec[i] = p_VEN_next
+            t_vec[i] = t
+
+
+            self.update_windkessel_expr(p_SAS_next,p_VEN_next) # Update all terms dependent on the windkessel pressures
+
+
             p_SAS = p_SAS_next
             p_VEN = p_VEN_next
 
-            xdmfU.write(up.sub(0), t)
-            xdmfP0.write(up.sub(1), t)
-            for i in range(self.numPnetworks):
-                xdmfP[i].write(up.sub(i+2), t)
-
+            
             up_n.assign(up)
             progress += 1
 
@@ -374,14 +355,29 @@ class MPET:
         plt.plot(t_vec, p_VEN_vec)
         plt.title("Pressure in the brain ventricles")
         fig3 = plt.figure(3)
-        plt.plot(t_vec, Q_SAS_vec)
-        plt.plot(t_vec, Q_VEN_vec)
-        plt.title("Fluid outflow of the brain parenchyma")
+        plt.plot(t_vec, Q_SAS_vec[0] + Q_SAS_vec[3])
+        plt.plot(t_vec, Q_VEN_vec[0] + Q_VEN_vec[3])
+        fig4 = plt.figure(4)
+        plt.plot(t_vec, Q_SAS_vec[1])
+        plt.plot(t_vec, Q_VEN_vec[1])
+        plt.title("Outflow of blood from the brain parenchyma")
+        fig5 = plt.figure(5)
+        plt.plot(t_vec, dV_vec)
+        plt.title("Volume change of the brain parenchyma")
         plt.show()
 
         self.u_sol = u
         self.p_sol = p
 
+
+    def windkessel_model(self,Q_SAS,Q_VEN,p_SAS,p_VEN):
+        p_SAS_next = 1 / self.C * (dt * Q_SAS + (self.C - dt / self.R) * p_SAS)
+        p_VEN_next = 1 / self.C * (dt * Q_VEN + (self.C - dt / self.R) * p_VEN)
+
+        print("Pressure for SAS: ", p_SAS_next)
+        print("Pressure for VEN: ", p_VEN_next)
+
+        return p_SAS_next, p_VEN_next
 
     def applyPressureBC(self,n,ds,W,p_,q):
         
@@ -474,7 +470,7 @@ class MPET:
                     self.integrals_N.append(inner(-n * N, q[0]) * ds(i))
                     self.windkessel_terms.append(N)
 
-
+                 
     def generateUFLexpressions(self):
         import sympy as sym
             
@@ -579,22 +575,21 @@ class MPET:
                         ['beta ventricles', self.beta_VEN, '--']],
                         headers=['Parameter', 'Value', 'Unit']))
 
-
-
-    def update_t(self,expr, t):
-        if isinstance(expr, ufl.tensors.ComponentTensor):
-            for dimexpr in expr.ufl_operands:
-                for op in dimexpr.ufl_operands:
-                    try:
-                        op.t = t
-                    except:
-                        print("passing for: ", expr)
-                        pass
-        elif isinstance(expr, tuple):
-            if isinstance(expr[0], dolfin.cpp.adaptivity.TimeSeries):
-                expr[0].retrieve(expr[1].vector(), t)
-        else:
-            self.operand_update(expr, t)
+    def update_time_expr(self,t):
+        for expr in self.time_expr:  
+            if isinstance(expr, ufl.tensors.ComponentTensor):
+                for dimexpr in expr.ufl_operands:
+                    for op in dimexpr.ufl_operands:
+                        try:
+                            op.t = t
+                        except:
+                            print("passing for: ", expr)
+                            pass
+            elif isinstance(expr, tuple):
+                if isinstance(expr[0], dolfin.cpp.adaptivity.TimeSeries):
+                    expr[0].retrieve(expr[1].vector(), t)
+                else:
+                    self.operand_update(expr, t)
 
             
     def operand_update(self,expr, t):
@@ -603,7 +598,19 @@ class MPET:
                 update_operator(expr.ufl_operands, t)
         elif isinstance(expr, ufl.Coefficient):
             expr.t = t
-            
+
+    
+    def update_windkessel_expr(self, p_SAS_next,p_VEN_next):
+        for expr in self.windkessel_terms:
+            try:
+                expr.p_SAS = p_SAS_next
+                expr.p_VEN = p_VEN_next
+            except:
+                try:
+                    expr.p_SAS = p_SAS_next
+                except:
+                    expr.p_VEN = p_VEN_next
+
 
 def ReadSourceTerm(mesh,filestr,periods,inflow = "Netto"):
     import csv

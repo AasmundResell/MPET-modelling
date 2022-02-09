@@ -2,11 +2,11 @@
 
 solver_settings:
   log_level : 20
-  T : 6.0
-  num_T_steps : 200
+  T : 3.0
+  num_T_steps : 100
   num_networks : 3
   element_type : CG
-  
+  mesh_resolution : 15 #Only for 2D
 
 material_parameters:
   E : 1642 # Pa, Young modulus
@@ -29,9 +29,9 @@ material_parameters:
     - 2.67e-3 #Viscosity fluid 2
     - 6.97e-4 #Viscosity fluid 3
   p_initial :
-    - 0.4 #Initial pressure network 1
+    - -1.6 #Initial pressure network 1
     - -1.5 #Initial pressure network 2
-    - 0.58 #Initial pressure network 3
+    - 1.0 #Initial pressure network 3
   gamma :
     - 0 #1/(Pa*s) Transfer network: 1-1
     - 1.0e-3 #1/(Pa*s) Transfer network: 1-2
