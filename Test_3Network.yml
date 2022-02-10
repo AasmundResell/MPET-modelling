@@ -2,11 +2,12 @@
 
 solver_settings:
   log_level : 20
-  T : 3.0
-  num_T_steps : 100
+  T : 6.0
+  num_T_steps : 200
   num_networks : 3
   element_type : CG
   mesh_resolution : 15 #Only for 2D
+  file_save : 3Network_results
 
 material_parameters:
   E : 1642 # Pa, Young modulus
@@ -49,7 +50,7 @@ boundary_parameters:
   Resistance : 10.81 # [mmHg*min/mL]
   beta_sas : 1.0e-5
   beta_ven : 1.0e-5
-  p_ven_initial : -0.2
+  p_ven_initial : -2.5
   p_sas_initial : 10.0
 
 source_data:

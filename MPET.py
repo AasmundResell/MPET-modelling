@@ -4,6 +4,21 @@ import ufl
 import numpy as np
 import matplotlib.pyplot as plt
 from tabulate import tabulate
+import pickle
+import os.path
+import pylab
+import matplotlib
+import pandas
+import glob
+
+matplotlib.rcParams["lines.linewidth"] = 3
+matplotlib.rcParams["axes.linewidth"] = 3
+matplotlib.rcParams["axes.labelsize"] = "xx-large"
+matplotlib.rcParams["grid.linewidth"] = 1
+matplotlib.rcParams["xtick.labelsize"] = "xx-large"
+matplotlib.rcParams["ytick.labelsize"] = "xx-large"
+matplotlib.rcParams["legend.fontsize"] = "xx-large"
+matplotlib.rcParams["font.size"] = 14
 
 
 class MPET:
@@ -19,7 +34,13 @@ class MPET:
         self.boundary_conditionsU = boundary_conditionsU
         self.boundary_conditionsP = boundary_conditionsP
         self.boundaryNum=3 #Number of boundaries
-        
+        self.filesave = kwargs.get("file_save")
+        # Create simulation directory if not existing
+        info("Simulation directory: %s" % self.filesave)
+        if not os.path.isdir(self.filesave):
+            info("Did not find %s/, creating directory" % self.filesave)
+            os.mkdir(self.filesave)
+    
         self.numPnetworks = kwargs.get("num_networks") 
         self.T = kwargs.get("T")
         self.numTsteps = kwargs.get("num_T_steps")
@@ -84,7 +105,6 @@ class MPET:
         print("Generating UFL expressions\n")
         self.generateUFLexpressions()
         
-        filesave = "solution_test"
         
         
         DIMCLASS = self.dim + self.numPnetworks +1 #For InitialConditions class
@@ -118,17 +138,17 @@ class MPET:
         progress = Progress("Time-stepping", self.numTsteps)
         set_log_level(LogLevel.PROGRESS)
 
-        xdmfU = XDMFFile(filesave + "/u.xdmf")
+        xdmfU = XDMFFile(self.filesave + "/FEM_results/u.xdmf")
         xdmfU.parameters["flush_output"]=True
         
 
 
-        xdmfP0 = XDMFFile(filesave + "/p0.xdmf")
+        xdmfP0 = XDMFFile(self.filesave + "/FEM_results/p0.xdmf")
         xdmfP0.parameters["flush_output"]=True
 
         xdmfP = []
         for i in range(self.numPnetworks):
-            xdmfP.append(XDMFFile(filesave + "/p" + str(i+1) + ".xdmf"))        
+            xdmfP.append(XDMFFile(self.filesave + "/FEM_results/p" + str(i+1) + ".xdmf"))        
             xdmfP[i].parameters["flush_output"]=True
 
 
@@ -138,23 +158,10 @@ class MPET:
 
         print("P_VEN =,", p_VEN)
         print("P_SAS =,", p_SAS)
-        # Storing values for plotting
-        t_vec = np.zeros(self.numTsteps)
-        dV_vec = np.zeros(self.numTsteps)
-        p_SAS_vec = np.zeros(self.numTsteps)
-        p_VEN_vec = np.zeros(self.numTsteps)
 
-        Q_SAS_VEC = []
-        Q_VEN_VEC = []
-
-        for i in range(self.numPnetworks): #Generate fluid outflow vectors
-            Q_SAS_VEC.append(np.zeros(self.numTsteps)) 
-            Q_VEN_VEC.append(np.zeros(self.numTsteps))
-        
         
         # Generate function space
         V = VectorElement(self.element_type, self.mesh.ufl_cell(), 2, self.dim)  # Displacements
-        V_test = FunctionSpace(self.mesh, V)
 
         Q_0 = FiniteElement(self.element_type, self.mesh.ufl_cell(), 1)  # Total pressure
         mixedElement = []
@@ -185,8 +192,6 @@ class MPET:
         dotProdP = []  # Contains the dot product of alpha_j & p_j,
         timeD_ = []  # Time derivative for the current step
         timeD_n = []  # Time derivative for the previous step
-        
-
 
         self.bcs_D = []  # Contains the terms for the Dirichlet boundaries
         self.integrals_N = []  # Contains the integrals for the Neumann boundaries
@@ -213,11 +218,11 @@ class MPET:
 
         def d(p,q,numP): #Time derivatives
             # network pressure change
-            dp  = self.c[numP] * p_[numP + 2]
+            d_p  = self.c[numP] * p[numP + 2]
 
             # volumetric strain
-            deps  = self.alpha[numP+1] / self.Lambda * sum(a * b for a, b in zip(self.alpha, p_[1:])) 
-            return (1 / self.dt)*(dp + deps) * q[numP + 2] * dx
+            d_eps  = self.alpha[numP+1] / self.Lambda * sum(a * b for a, b in zip(self.alpha, p[1:])) 
+            return (1 / self.dt)*(d_p + d_eps) * q[numP + 2] * dx
                 
         def F(f, v):
             return dot(f, v) * dx(self.mesh)
@@ -286,12 +291,21 @@ class MPET:
         [bc.apply(A) for bc in self.bcs_D]
 
         up = Function(W)
-        t = 0
-        
+        t = 0.0
 
-        for i in range(self.numTsteps):
+        #Write solution at time t
+        up_split = up.split(deepcopy = True)
+        results = self.generate_diagnostics(*up_split)
+        results["t"] = t
+        pickle.dump(results, open("%s/qois_%d.pickle" % (self.filesave, 0), "wb"))
+        xdmfU.write(up.sub(0), t)
+        xdmfP0.write(up.sub(1), t)
+        for j in range(self.numPnetworks):
+            xdmfP[j].write(up.sub(j+2), t)
+
+        for i in range(1,self.numTsteps+1): #Time loop
             t += self.dt
-
+            
             self.update_time_expr(t)# Update all time dependent terms
             
             b = assemble(rhs)
@@ -302,39 +316,27 @@ class MPET:
             solve(A, up.vector(), b) #Solve system
 
             #Write solution at time t
+            up_split = up.split(deepcopy = True)
+            results = self.generate_diagnostics(*up_split)
+
             xdmfU.write(up.sub(0), t)
             xdmfP0.write(up.sub(1), t)
             for j in range(self.numPnetworks):
-                xdmfP[j].write(up.sub(i+2), t)
+                xdmfP[j].write(up.sub(j+2), t)
 
-                #Calculate outflow for each network
-                Q_SAS_VEC[j][i] = assemble(-self.K[j] * dot(grad(up.sub(j+2)), n) * ds(1))
-                Q_VEN_VEC[j][i] = assemble(-self.K[j] * dot(grad(up.sub(j+2)), n) * ds(2)) + assemble(
-                -self.K[j] * dot(grad(up.sub(j+2)), n) * ds(3))
-
-
-            dV_vec[i] = assemble(dot(up.sub(0),n)*ds)
-
-
-
-
+                        
             #Assume both flow from capillaries and ECS flow out to the CSF filled cavities
-            Q_SAS = Q_SAS_VEC[0][i] + Q_SAS_VEC[2][i]
-            Q_VEN = Q_VEN_VEC[0][i] + Q_VEN_VEC[2][i]
-
-            p_SAS_next, p_SAS_next = self.windkessel_model(Q_SAS,Q_VEN,p_SAS,p_VEN)
+            Q_SAS = results["Q_SAS_N1"] + results["Q_SAS_N3"] + results["dV_SAS"]/self.dt
+            Q_VEN = results["Q_VEN_N1"] + results["Q_VEN_N3"] + results["dV_VEN"]/self.dt
             
-            p_SAS_vec[i] = p_SAS_next
-            p_VEN_vec[i] = p_VEN_next
-            t_vec[i] = t
+            p_SAS, p_VEN = self.windkessel_model(Q_SAS,Q_VEN,p_SAS,p_VEN) #calculates windkessel pressure @ t
 
+            self.update_windkessel_expr(p_SAS,p_VEN) # Update all terms dependent on the windkessel pressures
 
-            self.update_windkessel_expr(p_SAS_next,p_VEN_next) # Update all terms dependent on the windkessel pressures
-
-
-            p_SAS = p_SAS_next
-            p_VEN = p_VEN_next
-
+            results["p_SAS"] = p_SAS
+            results["p_VEN"] = p_SAS
+            results["t"] = t
+            pickle.dump(results, open("%s/qois_%d.pickle" % (self.filesave, i), "wb"))
             
             up_n.assign(up)
             progress += 1
@@ -345,6 +347,86 @@ class MPET:
         u = project(res[0], W.sub(0).collapse())
         p = []
 
+        self.u_sol = u
+        self.p_sol = p
+
+    def plotResults(self):
+        its = None
+        dV_fig, dV_ax = pylab.subplots(figsize=(12, 8))
+        p_figs, p_axs = pylab.subplots(figsize=(12, 8))
+        v_fig, v_ax = pylab.subplots(figsize=(12, 8))
+        t_fig, t_ax = pylab.subplots(figsize=(12, 8))
+        
+        # Color code the pressures: red, purple and blue
+        colors = ["crimson", "navy", "cornflowerblue"]
+        #markers = [".-.", "d--", "o-"]
+        markers = [".-", ".-", ".-"]
+    
+        
+        df = self.load_data()
+        print(df)
+        names = df.columns
+        times = (df["t"].to_numpy())
+
+        # Plot volume change
+        dV_ax.plot(times, df["dV"], markers[0], color="seagreen")
+        dV_ax.set_xlabel("time (s)")
+        dV_ax.set_xticks([0, 0.5, 1.0, 1.5, 2.0])
+        dV_ax.set_ylabel("dV (mm$^3$)")
+        dV_ax.grid(True)
+        dV_fig.savefig("brain-dV.png")
+        
+        # Plot max/min of the pressures
+        for i in range(1,self.numPnetworks+1):
+            p_axs.plot(times, df["max_p_%d" % i], markers[0],
+                       color=colors[i-1], label="$p_%d$" % i,)
+
+            p_axs.set_xlabel("time (s)")
+            p_axs.set_xticks([0, 0.5, 1.0, 1.5, 2.0])
+            p_axs.set_ylabel("$\max \, p$ (Pa)")
+            p_axs.grid(True)
+            p_axs.legend()
+        p_figs.savefig("brain-ps.png")
+
+        # Plot average compartment velocity (avg v_i)
+        for i in range(1,self.numPnetworks+1):
+                v_ax.plot(times, df["v%d_avg" % i], markers[0], color=colors[i-1],
+                          label="$v_%d$" % i)
+        v_ax.set_xlabel("time (s)")
+        v_ax.set_xticks([0, 0.5, 1.0, 1.5, 2.0])
+        v_ax.set_ylabel("Average velocity $v$ (mm/s)")
+        v_ax.grid(True)
+        v_ax.legend()
+        v_fig.savefig("brain-vs.png")
+
+        # Plot transfer rates (avg v_i)
+        t_ax.plot(times, df["T12"], markers[0], color="darkmagenta", label="$T_{12}$")
+        t_ax.plot(times, df["T13"], markers[0], color="royalblue", label="$T_{13}$")
+        t_ax.set_xlabel("time (s)")
+        t_ax.set_xticks([0, 0.5, 1.0, 1.5, 2.0])
+        t_ax.set_ylabel("Transfer rate ($L^2$-norm)")
+        t_ax.grid(True)
+        t_ax.legend()
+        t_fig.savefig("brain-Ts.png")
+    
+        pylab.show()
+        """
+
+
+        # Storing values for plotting
+        dV_SAS_vec = np.zeros(self.numTsteps)
+        dV_VEN_vec = np.zeros(self.numTsteps)
+        p_SAS_vec = np.zeros(self.numTsteps)
+        p_VEN_vec = np.zeros(self.numTsteps)
+        T12_vec = np.zeros(self.numTsteps)
+        T13_vec = np.zeros(self.numTsteps)
+
+        Q_SAS_VEC = []
+        Q_VEN_VEC = []
+
+        for i in range(self.numPnetworks): #Generate fluid outflow vectors
+            Q_SAS_VEC.append(np.zeros(self.numTsteps)) 
+            Q_VEN_VEC.append(np.zeros(self.numTsteps))
         for i in range(1, self.numPnetworks + 2):
             p.append(project(res[i], W.sub(i).collapse()))
 
@@ -355,24 +437,79 @@ class MPET:
         plt.plot(t_vec, p_VEN_vec)
         plt.title("Pressure in the brain ventricles")
         fig3 = plt.figure(3)
-        plt.plot(t_vec, Q_SAS_vec[0] + Q_SAS_vec[3])
-        plt.plot(t_vec, Q_VEN_vec[0] + Q_VEN_vec[3])
+        plt.plot(t_vec, Q_SAS_VEC[0] + Q_SAS_VEC[2])
+        plt.plot(t_vec, Q_VEN_VEC[0] + Q_VEN_VEC[2])
+        plt.title("Outflow of CSF/ISF from the brain parenchyma")
         fig4 = plt.figure(4)
-        plt.plot(t_vec, Q_SAS_vec[1])
-        plt.plot(t_vec, Q_VEN_vec[1])
+        plt.plot(t_vec, Q_SAS_VEC[1])
+        plt.plot(t_vec, Q_VEN_VEC[1])
         plt.title("Outflow of blood from the brain parenchyma")
         fig5 = plt.figure(5)
-        plt.plot(t_vec, dV_vec)
+        plt.plot(t_vec, dV_SAS_vec)
+        plt.plot(t_vec, dV_VEN_vec)
         plt.title("Volume change of the brain parenchyma")
         plt.show()
 
-        self.u_sol = u
-        self.p_sol = p
+        """
+
+    def printResults():
+
+        return 0
+    def generate_diagnostics(self,*args):
+        results = {}
+        u = args[0]
+        p_list = []
+        for arg in args[1:]:
+            p_list.append(arg)
+
+        # Change of volume:
+        dV = assemble(div(u)*dx)
+        results["dV"] = dV
+        print("div(u)*dx (mm^3) = ", dV)
+
+        n = FacetNormal(self.mesh)
+        V = VectorFunctionSpace(self.mesh, "DG", 0)
+
+        print("len p_list:",len(p_list))
+        # Pressures
+        for (i, p) in enumerate(p_list):
+            print("max(p_%d) (Pa) = " % (i), max(p.vector()))
+            print("min(p_%d) (Pa) = " % (i), min(p.vector()))
+            results["max_p_%d" % (i)] = max(p.vector())
+            results["min_p_%d" % (i)] = min(p.vector())
+
+            A = np.sqrt(assemble(1*dx(self.mesh)))
+            if i > 0: # Darcy velocities
+                v = project(self.K[i-1]*grad(p), V)
+                v_avg = norm(v, "L2")/A
+                print("avg_v%d(mm/s) = " % (i), v_avg)
+                results["v%d_avg" % (i)] = v_avg
+
+                #Calculate outflow for each network
+                results["Q_SAS_N%d" %(i)] = assemble(-self.K[i-1] * dot(grad(p), n) * ds(1))
+                results["Q_VEN_N%d" %(i)] = assemble(-self.K[i-1] * dot(grad(p), n) * ds(2)) + assemble(
+                -self.K[i-1] * dot(grad(p), n) * ds(3))
+            
+            
+        
+
+        results["dV_SAS"] = assemble(dot(u,n)*ds(1))
+        results["dV_VEN"] = assemble(dot(u,n)*ds(2)) + assemble(dot(u,n)*ds(3))
+
+        # Transfer rates
+        S = FunctionSpace(self.mesh, "CG", 1)
+        
+        t12 = project(self.gamma[0,1]*(p_list[1]-p_list[2]),S)
+        t13 = project(self.gamma[0,2]*(p_list[1]-p_list[3]),S)
+        results["T12"] = norm(t12,"L2")
+        results["T13"] = norm(t13,"L2")
+        return results
+ 
 
 
     def windkessel_model(self,Q_SAS,Q_VEN,p_SAS,p_VEN):
-        p_SAS_next = 1 / self.C * (dt * Q_SAS + (self.C - dt / self.R) * p_SAS)
-        p_VEN_next = 1 / self.C * (dt * Q_VEN + (self.C - dt / self.R) * p_VEN)
+        p_SAS_next = 1 / self.C * (self.dt * Q_SAS + (self.C - self.dt / self.R) * p_SAS)
+        p_VEN_next = 1 / self.C * (self.dt * Q_VEN + (self.C - self.dt / self.R) * p_VEN)
 
         print("Pressure for SAS: ", p_SAS_next)
         print("Pressure for VEN: ", p_VEN_next)
@@ -611,6 +748,22 @@ class MPET:
                 except:
                     expr.p_VEN = p_VEN_next
 
+    def load_data(self): 
+        it = None
+        # Get number of results files
+        directory = os.path.join(self.filesave)
+        files = glob.glob("%s/qois_*.pickle" % directory)
+        N = len(files)
+        
+        # Read all results files into list of results, and stuff into
+        # pandas DataFrame
+        results = []
+        for n in range(N):
+            res_n = pickle.load(open("%s/qois_%d.pickle" % (directory, n), "rb"))
+            results.append(res_n)
+        df = pandas.DataFrame(results)
+        
+        return df
 
 def ReadSourceTerm(mesh,filestr,periods,inflow = "Netto"):
     import csv

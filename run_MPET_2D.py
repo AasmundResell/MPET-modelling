@@ -92,8 +92,10 @@ def run_MPET_2D():
     
     Solver2D.printSetup()
 
-    Solver2D.solve()
+    #Solver2D.solve()
 
+    Solver2D.plotResults()
+    Solver2D.printResults()
     
 def generateUFL_BCexpressions():
     import sympy as sym
