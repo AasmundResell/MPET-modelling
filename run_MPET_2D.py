@@ -26,6 +26,10 @@ class BoundaryChannel(SubDomain):
         tol = 1e-10
         return on_boundary and (near(x[0], -1, tol) or near(x[0], 1, tol))
 
+class BoundarySpine(SubDomain):
+    def inside(self, x, on_boundary):
+        return 10
+
 def run_MPET_2D():
 
     ymlFile = open("Test_3Network.yml") 
@@ -54,11 +58,12 @@ def run_MPET_2D():
     U,pVentricles,pSkull = generateUFL_BCexpressions()
     beta_VEN = boundaryParameters["beta_ven"]
     beta_SAS = boundaryParameters["beta_sas"]
+    p_BP = boundaryParameters["p_vein"] #Back pressure, veins
 
     #Generate boundary conditions for the displacements
     #The integer keys represents a boundary (marker)
     boundary_conditionsU = {
-        1: {"Dirichlet": U},
+        1: {"NeumannWK": pSkull},
         2: {"NeumannWK": pVentricles},
         3: {"NeumannWK": pVentricles},
     }
@@ -70,7 +75,7 @@ def run_MPET_2D():
         (1, 1): {"Neumann": 0}, 
         (1, 2): {"Neumann": 0},
         (1, 3): {"Neumann": 0},
-        (2, 1): {"Dirichlet": Constant("0.0")},
+        (2, 1): {"Dirichlet": Constant(p_BP)},
         (2, 2): {"Neumann": 0},
         (2, 3): {"Neumann": 0},
         (3, 1): {"RobinWK": (beta_SAS,pSkull)},
@@ -92,10 +97,9 @@ def run_MPET_2D():
     
     Solver2D.printSetup()
 
-    #Solver2D.solve()
+    Solver2D.solve()
 
     Solver2D.plotResults()
-    Solver2D.printResults()
     
 def generateUFL_BCexpressions():
     import sympy as sym

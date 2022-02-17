@@ -40,8 +40,8 @@ def generate_2D_brain_mesh_mm(n=16):
         mesh = refine(mesh, markers)
                 
 
-    #plot(mesh)
-    #plt.show()
+    plot(mesh)
+    plt.show()
     
     return mesh
 

@@ -32,7 +32,7 @@ material_parameters:
   p_initial :
     - -1.6 #Initial pressure network 1
     - -1.5 #Initial pressure network 2
-    - 1.0 #Initial pressure network 3
+    - 0.8 #Initial pressure network 3
   gamma :
     - 0 #1/(Pa*s) Transfer network: 1-1
     - 1.0e-3 #1/(Pa*s) Transfer network: 1-2
@@ -46,12 +46,14 @@ material_parameters:
 
 
 boundary_parameters:
-  Compliance : 2.5 # [microL/mmHg]
-  Resistance : 10.81 # [mmHg*min/mL]
+  Compliance_sas : 2.5 # [microL/mmHg]
+  Compliance_ven : 0.25 # [microL/mmHg]
+  Resistance : 100.81 # [mmHg*min/mL]
   beta_sas : 1.0e-5
   beta_ven : 1.0e-5
-  p_ven_initial : -2.5
-  p_sas_initial : 10.0
+  p_ven_initial : 5.0
+  p_sas_initial : -2.0
+  p_vein : -2.0 # Back pressure, vein network
 
 source_data:
   source_file : data/baladont_tot_inflow_series_shifted.csv

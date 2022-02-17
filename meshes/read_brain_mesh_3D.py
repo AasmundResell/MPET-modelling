@@ -1,16 +1,17 @@
 from fenics import *
 from matplotlib.pyplot import show
 
+
 def read_brain_mesh_3D():
 
-    path = "/home/asmund/dev/FEniCS-Brain-Flow/meshes/parenchyma16_with_DTI.h5"
+    path = "/home/asmund/dev/MPET-modelling/meshes/parenchyma16_with_DTI.h5"
     mesh = Mesh()
-    #hdf = HDF5File(mesh.mpi_comm(),path , "r")
-    #hdf.read(mesh, "/mesh", False)
+    hdf = HDF5File(mesh.mpi_comm(),path , "r")
+    hdf.read(mesh, "/mesh", False)
     SD = MeshFunction("size_t", mesh,mesh.topology().dim())
-    #hdf.read(SD, "/subdomains")
+    hdf.read(SD, "/subdomains")
     bnd = MeshFunction("size_t", mesh,mesh.topology().dim()-1)
-    #hdf.read(bnd, "/boundaries")
+    hdf.read(bnd, "/boundaries")
     #lookup_table = MeshFunction("size_t", mesh, mesh.topology().dim())
     #hdf.read(lookup_table, '/lookup_table')
     #TensorSpace = TensorFunctionSpace(mesh, 'DG', 0)
@@ -20,8 +21,8 @@ def read_brain_mesh_3D():
     #hdf.read(MD, '/MD')
     #hdf.read(Kt, '/DTI')
     
-    #File('subdomains.pvd')<<SD
-    #File('bnd.pvd')<<bnd
+    File('subdomains.pvd')<<SD
+    File('bnd.pvd')<<bnd 
 
     return mesh,SD,bnd
 
@@ -33,5 +34,5 @@ def read_brain_scale(mesh):
     return vol_scale
 if __name__ == "__main__":
     mesh = read_brain_mesh_3D()
-    scale = read_brain_scale(mesh)
+    #scale = read_brain_scale(mesh)
        
