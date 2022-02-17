@@ -7,7 +7,7 @@ solver_settings:
   num_networks : 3
   element_type : CG
   mesh_resolution : 15 #Only for 2D
-  file_save : 3Network_results
+  file_save : 3Network_results_fixedChannel
 
 material_parameters:
   E : 1642 # Pa, Young modulus
@@ -47,12 +47,12 @@ material_parameters:
 
 boundary_parameters:
   Compliance_sas : 2.5 # [microL/mmHg]
-  Compliance_ven : 0.25 # [microL/mmHg]
-  Resistance : 100.81 # [mmHg*min/mL]
+  Compliance_ven : 2.5   # [microL/mmHg]
+  Resistance : 10.81 # [mmHg*min/mL]
   beta_sas : 1.0e-5
   beta_ven : 1.0e-5
-  p_ven_initial : 5.0
-  p_sas_initial : -2.0
+  p_sas_initial : 10.0
+  p_ven_initial : -10.0
   p_vein : -2.0 # Back pressure, vein network
 
 source_data:
