@@ -79,7 +79,7 @@ class MPET:
             
         
         self.sourceFile = kwargs.get("source_file")
-        self.g = [ReadSourceTerm(self.mesh,self.sourceFile,self.T,inflow = "Netto"),None,None]
+        self.g = [ReadSourceTerm(self.mesh,self.sourceFile,self.T),None,None]
 
         self.Lambda = self.nu*self.E/((1+self.nu)*(1-2*self.nu))
         self.mu = self.E/(2*(1+self.nu))        
@@ -87,9 +87,16 @@ class MPET:
         self.dim = self.mesh.topology().dim()
 
         #Boundary parameters
-        self.C_SAS =  kwargs.get("Compliance_sas")/self.conversionP # [microL/mmHg] to [mm^3/Pa]
-        self.C_VEN =  kwargs.get("Compliance_ven")/self.conversionP # [microL/mmHg] to [mm^3/Pa]
-        self.R =  kwargs.get("Resistance")*self.conversionP*60e-3 # [mmHg*min/mL] to [Pa*/mm^3]
+        if kwargs.get("Compliance_sas"):
+            self.C_SAS =  kwargs.get("Compliance_sas")/self.conversionP # [microL/mmHg] to [mm^3/Pa]
+        if kwargs.get("Compliance_ven"):
+            self.C_VEN =  kwargs.get("Compliance_ven")/self.conversionP # [microL/mmHg] to [mm^3/Pa]
+        if kwargs.get("Resistance"):
+            self.R =  kwargs.get("Resistance")*self.conversionP*60e-3 # [mmHg*min/mL] to [Pa*/mm^3]
+
+        #For alternative model for ventricles
+        self.L = kwargs.get("length")
+        self.d = kwargs.get("diameter")
 
         self.beta_VEN = kwargs.get("beta_ven")
         self.beta_SAS = kwargs.get("beta_sas")
@@ -291,7 +298,10 @@ class MPET:
         up = Function(W)
         t = 0.0
 
-
+ 
+        dV_PREV_SAS = 0.0
+        dV_PREV_VEN = 0.0
+      
         for i in range(0,self.numTsteps+1): #Time loop
             
             self.update_time_expr(t)# Update all time dependent terms
@@ -312,14 +322,24 @@ class MPET:
             for j in range(self.numPnetworks):
                 xdmfP[j].write(up.sub(j+2), t)
 
-                        
-            p_SAS, p_VEN = self.windkessel_model(p_SAS,p_VEN,results) #calculates windkessel pressure @ t
+
+            #For calculating volume change in Windkessel model
+            results["dV_SAS_PREV"] = dV_PREV_SAS
+            results["dV_VEN_PREV"] = dV_PREV_VEN
+            
+            p_SAS, p_VEN,V_dot = self.windkessel_model(p_SAS,p_VEN,results) #calculates windkessel pressure @ t
 
             self.update_windkessel_expr(p_SAS,p_VEN) # Update all terms dependent on the windkessel pressures
 
+
             results["p_SAS"] = p_SAS
             results["p_VEN"] = p_VEN
+            results["V_dot"] = V_dot
             results["t"] = t
+
+            dV_PREV_SAS = results["dV_SAS"]
+            dV_PREV_VEN = results["dV_VEN"]
+
             pickle.dump(results, open("%s/data_set/qois_%d.pickle" % (self.filesave, i), "wb"))
             
             up_n.assign(up)
@@ -341,6 +361,7 @@ class MPET:
 
         its = None
         dV_fig, dV_ax = pylab.subplots(figsize=(12, 8))
+        V_dot_fig, V_dot_ax = pylab.subplots(figsize=(12, 8))
         PW_figs, PW_axs  = pylab.subplots(figsize=(12, 8)) #Pressure Windkessel
         Q_figs, Q_axs  = pylab.subplots(figsize=(12, 8)) #Outflow CSF
         BV_figs, BV_axs  = pylab.subplots(figsize=(12, 8)) #Outflow venous blood
@@ -360,7 +381,7 @@ class MPET:
         names = df.columns
         times = (df["t"].to_numpy())
         
-         # Plot volume change
+         # Plot volume 
         dV_ax.plot(times, df["dV"], markers[0], color="seagreen",label="div(u)dx")
         dV_ax.plot(times, df["dV_SAS"], markers[1], color="darkmagenta",label="(u * n)ds_{SAS}")
         dV_ax.plot(times, df["dV_VEN"], markers[2], color="royalblue",label="(u * n)ds_{VEN}")
@@ -370,6 +391,15 @@ class MPET:
         dV_ax.grid(True)
         dV_ax.legend()
         dV_fig.savefig(plotDir + "brain-dV.png")
+
+        # Plot volume derivative
+        V_dot_ax.plot(times, df["V_dot"], markers[0], color="seagreen",label="div(u)dx")
+        V_dot_ax.set_xlabel("time (s)")
+        V_dot_ax.set_xticks(x_ticks)
+        V_dot_ax.set_ylabel("V_dot (mm$^3$/s)")
+        V_dot_ax.grid(True)
+        V_dot_ax.legend()
+        V_dot_fig.savefig(plotDir + "brain-V_dot.png")
 
         
         # Plot max/min of the pressures
@@ -506,21 +536,32 @@ class MPET:
 
     def windkessel_model(self,p_SAS,p_VEN,results):
 
-        #Assume both flow from capillaries and ECS flow out to the CSF filled cavities
-        Q_SAS = results["Q_SAS_N3"] #+ results["Q_SAS_N1"] + results["dV_SAS"]
-        Q_VEN = results["Q_VEN_N3"] #+ results["Q_VEN_N1"] + results["dV_VEN"]
-        
+        #Assume only flow from ECS flow out to the CSF filled cavities
+
+        #P_SAS is determined from Windkessel parameters
+        Q_SAS = results["Q_SAS_N3"]
         print("Q_SAS:",Q_SAS)
+
+        #P_VEN is determined from volume change of the ventricles
+        Q_VEN = results["Q_VEN_N3"]
         print("Q_VEN:",Q_VEN)
-        
-            
-        p_SAS_next = 1 / self.C_SAS * (self.dt * Q_SAS + (self.C_SAS - self.dt / self.R) * p_SAS)
-        p_VEN_next = 1 / self.C_VEN * (self.dt * Q_VEN + (self.C_VEN - self.dt / self.R) * p_VEN)
+
+        #Volume change of ventricles
+        V_dot = 1/self.dt*(results["dV_VEN"]-results["dV_VEN_PREV"])
+
+        K = np.pi*self.d**4/(128*self.L*self.mu_f[2]) #Poiseuille flow constant
+
+        p_SAS_next = p_SAS * ( 1 - self.dt / (self.C_SAS * self.R) ) + self.dt/self.C_SAS *( Q_SAS )#+ Q_VEN + V_dot)
+ 
+        p_VEN_next = p_VEN * ( 1 - self.dt / (self.C_VEN * self.R) ) + self.dt/self.C_VEN *( Q_VEN )
+
+        #Alt model
+        #p_VEN_next = p_SAS_next + 1/K*(Q_VEN + V_dot)
 
         print("Pressure for SAS: ", p_SAS_next)
         print("Pressure for VEN: ", p_VEN_next)
 
-        return p_SAS_next, p_VEN_next
+        return p_SAS_next, p_VEN_next,V_dot
 
     def applyPressureBC(self,W,p_,q):
         
@@ -713,7 +754,6 @@ class MPET:
 
         print("\n BOUNDARY PARAMETERS\n")
         print(tabulate([['Compliance SAS', self.C_SAS, 'mm^3/Pa'],
-                        ['Compliance ventricles', self.C_VEN, 'mm^3/Pa'],
                         ['Resistance', self.R, 'Pa/s/mm^3'],
                         ['beta SAS', self.beta_SAS, '--' ],
                         ['beta ventricles', self.beta_VEN, '--']],
@@ -772,15 +812,18 @@ class MPET:
         
         return df
 
-def ReadSourceTerm(mesh,sourceData,periods,inflow = "Netto"):
+def ReadSourceTerm(mesh,sourceData,periods):
     import csv
-    g = TimeSeries("source_term")
+
+    FileName = sourceData + "series"
+    if os.path.exists(FileName + ".h5"):
+        print("Removing old timeseries")
+        os.remove(FileName + ".h5")
+
+    g = TimeSeries(FileName)
+    
     source_scale = 1/1173670.5408281302
 
-    if inflow == "Brutto":
-        offset = 10000
-    else:
-        offset = 0.0
     Q = FunctionSpace(mesh,"CG",1)
     time_period = 0.0
     for i in range(int(periods)):
@@ -794,7 +837,7 @@ def ReadSourceTerm(mesh,sourceData,periods,inflow = "Netto"):
                    line_count += 1
                 else:
                    #print(float(row[1]))
-                   source = Constant((float(row[1])+offset)*source_scale) #Uniform source on the domain
+                   source = Constant((float(row[1]))*source_scale) #Uniform source on the domain
                    source = project(source, Q)
                    g.store(source.vector(),float(row[0]) + i*time_period)
                    #print(f"\t timestep {row[0]} adding {row[1]} to the source.")

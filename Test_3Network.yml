@@ -30,9 +30,9 @@ material_parameters:
     - 2.67e-3 #Viscosity fluid 2
     - 6.97e-4 #Viscosity fluid 3
   p_initial :
-    - -1.6 #Initial pressure network 1
-    - -1.5 #Initial pressure network 2
-    - 0.8 #Initial pressure network 3
+    - 100 #Initial pressure network 1
+    - 100 #Initial pressure network 2
+    - 90 #Initial pressure network 3
   gamma :
     - 0 #1/(Pa*s) Transfer network: 1-1
     - 1.0e-3 #1/(Pa*s) Transfer network: 1-2
@@ -47,16 +47,19 @@ material_parameters:
 
 boundary_parameters:
   Compliance_sas : 2.5 # [microL/mmHg]
-  Compliance_ven : 0.25 # [microL/mmHg]
+  Compliance_ven : 2.5
   Resistance : 100.81 # [mmHg*min/mL]
   beta_sas : 1.0e-5
   beta_ven : 1.0e-5
-  p_ven_initial : 5.0
-  p_sas_initial : -2.0
-  p_vein : -2.0 # Back pressure, vein network
+  p_sas_initial : -200.0
+  p_ven_initial : 0.0 #270.0
+  p_vein : 100 # Back pressure, vein network
+  #for alt model, remember that mesh is in mm
+  length : 70.0 #[mm]
+  diameter : 3.0 #[mm]
 
 source_data:
-  source_file : data/baladont_tot_inflow_series_shifted.csv
+  source_file : data/Arterial_bloodflow_shifted.csv
   source_params:
     f : 1.0
   scaling : 1.0e-9 ## mm^3 to m^3

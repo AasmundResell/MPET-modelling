@@ -63,7 +63,7 @@ def run_MPET_2D():
     #Generate boundary conditions for the displacements
     #The integer keys represents a boundary (marker)
     boundary_conditionsU = {
-        1: {"NeumannWK": pSkull},
+        1: {"Dirichlet": U},
         2: {"NeumannWK": pVentricles},
         3: {"NeumannWK": pVentricles},
     }
@@ -76,7 +76,7 @@ def run_MPET_2D():
         (1, 2): {"Neumann": 0},
         (1, 3): {"Neumann": 0},
         (2, 1): {"Dirichlet": Constant(p_BP)},
-        (2, 2): {"Neumann": 0},
+        (2, 2): {"Dirichlet": Constant(p_BP)}, #A lot of large veins on the lower part of the brain, any better way of implementing this?? (robin cond?)
         (2, 3): {"Neumann": 0},
         (3, 1): {"RobinWK": (beta_SAS,pSkull)},
         (3, 2): {"RobinWK": (beta_VEN,pVentricles)},
