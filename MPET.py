@@ -10,6 +10,7 @@ import pylab
 import matplotlib
 import pandas
 import glob
+from pathlib import Path
 
 matplotlib.rcParams["lines.linewidth"] = 3
 matplotlib.rcParams["axes.linewidth"] = 3
@@ -35,11 +36,20 @@ class MPET:
         self.boundary_conditionsP = boundary_conditionsP
         self.boundaryNum=3 #Number of boundaries
         self.filesave = kwargs.get("file_save")
-        # Create simulation directory if not existing
+        # Create simulation director fs  y if not existing
         info("Simulation directory: %s" % self.filesave)
         if not os.path.isdir(self.filesave):
             info("Did not find %s/, creating directory" % self.filesave)
             os.mkdir(self.filesave)
+
+        path = Path("/home/asmund/dev/MPET-modelling/%s/data_set/" %self.filesave)
+        path.mkdir(parents=True,exist_ok=True)
+        path = Path("/home/asmund/dev/MPET-modelling/%s/plots/" %self.filesave)
+        path.mkdir(parents=True,exist_ok=True)
+        path = Path("/home/asmund/dev/MPET-modelling/%s/FEM_results/" %self.filesave)
+        path.mkdir(parents=True,exist_ok=True)
+        #os.mkdir(os.path.join(self.filesave,"/plots"))
+        #os.mkdir(os.path.join(self.filesave,"/FEM_results"))
     
         self.numPnetworks = kwargs.get("num_networks") 
         self.T = kwargs.get("T")
@@ -536,10 +546,17 @@ class MPET:
 
     def windkessel_model(self,p_SAS,p_VEN,results):
 
+<<<<<<< HEAD
         #Assume only flow from ECS flow out to the CSF filled cavities
 
         #P_SAS is determined from Windkessel parameters
         Q_SAS = results["Q_SAS_N3"]
+=======
+        #Assume both flow from capillaries and ECS flow out to the CSF filled cavities
+        Q_SAS = results["Q_SAS_N3"] #+ results["Q_SAS_N1"] + results["dV_SAS"]
+        Q_VEN = results["Q_VEN_N3"] + results["Q_VEN_N1"] + results["dV_VEN"]/10
+        
+>>>>>>> 7598a07157606fdfde73777a8afbc84ebcda44dd
         print("Q_SAS:",Q_SAS)
 
         #P_VEN is determined from volume change of the ventricles

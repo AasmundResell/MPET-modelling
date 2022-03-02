@@ -30,9 +30,9 @@ class BoundarySpine(SubDomain):
     def inside(self, x, on_boundary):
         return 10
 
-def run_MPET_2D():
+def run_MPET_2D_fixedOuter():
 
-    ymlFile = open("Test_3Network.yml") 
+    ymlFile = open("Test_3Network_fixed_outer.yml") 
     parsedValues = yaml.load(ymlFile, Loader=yaml.FullLoader)
     materialParameters = parsedValues['material_parameters']
     settings = parsedValues['solver_settings']
@@ -100,6 +100,77 @@ def run_MPET_2D():
     Solver2D.solve()
 
     Solver2D.plotResults()
+ 
+def run_MPET_2D_fixedChannel():
+
+    ymlFile = open("Test_3Network_fixed_channel.yml") 
+    parsedValues = yaml.load(ymlFile, Loader=yaml.FullLoader)
+    materialParameters = parsedValues['material_parameters']
+    settings = parsedValues['solver_settings']
+    sourceParameters = parsedValues['source_data']
+    boundaryParameters = parsedValues['boundary_parameters']
+    
+ 
+    meshN = settings["mesh_resolution"]
+    mesh = generate_2D_brain_mesh_mm(meshN)
+    n = FacetNormal(mesh)  # normal vector on the boundary
+    
+    # Define boundary
+    boundary_markers = MeshFunction("size_t", mesh, 1)
+    boundary_markers.set_all(9999)
+    
+    bx0 = BoundaryOuter()
+    bx0.mark(boundary_markers, 1)  # Applies for all boundaries
+    bx1 = BoundaryInner() 
+    bx1.mark(boundary_markers, 2)  # Overwrites the inner ventricles boundary
+    bx2 = BoundaryChannel()
+    bx2.mark(boundary_markers, 3)  # Overwrites the channel ventricles boundary
+
+    U,pVentricles,pSkull = generateUFL_BCexpressions()
+    beta_VEN = boundaryParameters["beta_ven"]
+    beta_SAS = boundaryParameters["beta_sas"]
+    p_BP = boundaryParameters["p_vein"] #Back pressure, veins
+
+    #Generate boundary conditions for the displacements
+    #The integer keys represents a boundary (marker)
+    boundary_conditionsU = {
+        1: {"NeumannWK": pSkull},
+        2: {"NeumannWK": pVentricles},
+        3: {"Dirichlet": U},
+    }
+    
+    #Generate boundary conditions for the fluid pressures
+    #Indice 1 in the touple key represents the fluid network
+    #Indice 2 in the touple key represents a boundary (marker)
+    boundary_conditionsP = { #Applying windkessel bc
+        (1, 1): {"Neumann": 0}, 
+        (1, 2): {"Neumann": 0},
+        (1, 3): {"Neumann": 0},
+        (2, 1): {"Dirichlet": Constant(p_BP)},
+        (2, 2): {"Neumann": 0},
+        (2, 3): {"Neumann": 0},
+        (3, 1): {"RobinWK": (beta_SAS,pSkull)},
+        (3, 2): {"RobinWK": (beta_VEN,pVentricles)},
+        (3, 3): {"RobinWK": (beta_VEN,pVentricles)},
+    }
+
+
+    Solver2D = MPET(
+        mesh,
+        boundary_markers,
+        boundary_conditionsU,
+        boundary_conditionsP,
+        **settings,
+        **materialParameters,
+        **sourceParameters,
+        **boundaryParameters,
+    )
+    
+    Solver2D.printSetup()
+
+    Solver2D.solve()
+
+    Solver2D.plotResults()
     
 def generateUFL_BCexpressions():
     import sympy as sym
@@ -136,6 +207,5 @@ def generateUFL_BCexpressions():
 
 
 if __name__ == "__main__":
-    run_MPET_2D()
-
+    run_MPET_2D_fixedOuter()
     

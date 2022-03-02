@@ -39,10 +39,7 @@ def generate_2D_brain_mesh_mm(n=16):
         
         mesh = refine(mesh, markers)
                 
-
-    plot(mesh)
-    plt.show()
-    
+   
     return mesh
 
 def generate_2D_brain_mesh_m(n=16):
@@ -76,8 +73,6 @@ def generate_2D_brain_mesh_m(n=16):
         mesh = refine(mesh, markers)
 
         
-    plot(mesh)
-    plt.show()
     return mesh
 
 if __name__ == "__main__":
@@ -85,3 +80,10 @@ if __name__ == "__main__":
     n = 10
     mesh_mm = generate_2D_brain_mesh_mm(n)
     mesh_m = generate_2D_brain_mesh_m(n)
+
+    plot(mesh_mm)
+    plt.show()
+ 
+    plot(mesh_m)
+    plt.show()
+ 
