@@ -30,9 +30,9 @@ class BoundarySpine(SubDomain):
     def inside(self, x, on_boundary):
         return 10
 
-def run_MPET_2D_fixedOuter():
+def run_MPET_2D_AbsoluteInflow():
 
-    ymlFile = open("Test_3Network_fixed_outer.yml") 
+    ymlFile = open("2D_3MPET_AbsAPB.yml") 
     parsedValues = yaml.load(ymlFile, Loader=yaml.FullLoader)
     materialParameters = parsedValues['material_parameters']
     settings = parsedValues['solver_settings']
@@ -76,7 +76,7 @@ def run_MPET_2D_fixedOuter():
         (1, 2): {"Neumann": 0},
         (1, 3): {"Neumann": 0},
         (2, 1): {"Dirichlet": Constant(p_BP)},
-        (2, 2): {"Dirichlet": Constant(p_BP)}, #A lot of large veins on the lower part of the brain, any better way of implementing this?? (robin cond?)
+        (2, 2): {"Neumann": 0}, #A lot of large veins on the lower part of the brain, any better way of implementing this?? (robin cond?)
         (2, 3): {"Neumann": 0},
         (3, 1): {"RobinWK": (beta_SAS,pSkull)},
         (3, 2): {"RobinWK": (beta_VEN,pVentricles)},
@@ -101,9 +101,9 @@ def run_MPET_2D_fixedOuter():
 
     Solver2D.plotResults()
  
-def run_MPET_2D_fixedChannel():
+def run_MPET_2D_AbsoluteInflow_scaled():
 
-    ymlFile = open("Test_3Network_fixed_channel.yml") 
+    ymlFile = open("2D_3MPET_AbsAPB_meanScaled.yml") 
     parsedValues = yaml.load(ymlFile, Loader=yaml.FullLoader)
     materialParameters = parsedValues['material_parameters']
     settings = parsedValues['solver_settings']
@@ -134,9 +134,9 @@ def run_MPET_2D_fixedChannel():
     #Generate boundary conditions for the displacements
     #The integer keys represents a boundary (marker)
     boundary_conditionsU = {
-        1: {"NeumannWK": pSkull},
+        1: {"Dirichlet": U},
         2: {"NeumannWK": pVentricles},
-        3: {"Dirichlet": U},
+        3: {"NeumannWK": pVentricles},
     }
     
     #Generate boundary conditions for the fluid pressures
@@ -147,7 +147,7 @@ def run_MPET_2D_fixedChannel():
         (1, 2): {"Neumann": 0},
         (1, 3): {"Neumann": 0},
         (2, 1): {"Dirichlet": Constant(p_BP)},
-        (2, 2): {"Neumann": 0},
+        (2, 2): {"Neumann": 0}, #A lot of large veins on the lower part of the brain, any better way of implementing this?? (robin cond?)
         (2, 3): {"Neumann": 0},
         (3, 1): {"RobinWK": (beta_SAS,pSkull)},
         (3, 2): {"RobinWK": (beta_VEN,pVentricles)},
@@ -171,6 +171,7 @@ def run_MPET_2D_fixedChannel():
     Solver2D.solve()
 
     Solver2D.plotResults()
+ 
     
 def generateUFL_BCexpressions():
     import sympy as sym
@@ -203,9 +204,10 @@ def generateUFL_BCexpressions():
         pVentricles_UFL,
     ) = UFLvariables
     U_UFL = as_vector((Expression("0.0", degree=2), Expression("0.0", degree=2)))
-    return U_UFL, pSkull_UFL, pVentricles_UFL
+    return U_UFL,pSkull_UFL, pVentricles_UFL
 
 
 if __name__ == "__main__":
-    run_MPET_2D_fixedOuter()
-    
+    run_MPET_2D_AbsoluteInflow()
+    run_MPET_2D_AbsoluteInflow_scaled()
+#    run_MPET_2D_RelativeInflow()

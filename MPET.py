@@ -36,24 +36,24 @@ class MPET:
         self.boundary_conditionsP = boundary_conditionsP
         self.boundaryNum=3 #Number of boundaries
         self.filesave = kwargs.get("file_save")
-        # Create simulation director fs  y if not existing
+        # Create simulation director if not existing
         info("Simulation directory: %s" % self.filesave)
         if not os.path.isdir(self.filesave):
             info("Did not find %s/, creating directory" % self.filesave)
             os.mkdir(self.filesave)
 
-        path = Path("/home/asmund/dev/MPET-modelling/%s/data_set/" %self.filesave)
-        path.mkdir(parents=True,exist_ok=True)
-        path = Path("/home/asmund/dev/MPET-modelling/%s/plots/" %self.filesave)
-        path.mkdir(parents=True,exist_ok=True)
-        path = Path("/home/asmund/dev/MPET-modelling/%s/FEM_results/" %self.filesave)
-        path.mkdir(parents=True,exist_ok=True)
-        #os.mkdir(os.path.join(self.filesave,"/plots"))
-        #os.mkdir(os.path.join(self.filesave,"/FEM_results"))
+            path.mkdir(parents=True,exist_ok=True)
+            path = Path("/home/asmund/dev/MPET-modelling/%s/data_set/" %self.filesave)
+            path.mkdir(parents=True,exist_ok=True)
+            path = Path("/home/asmund/dev/MPET-modelling/%s/plots/" %self.filesave)
+            path.mkdir(parents=True,exist_ok=True)
+            path = Path("/home/asmund/dev/MPET-modelling/%s/FEM_results/" %self.filesave)
+            path.mkdir(parents=True,exist_ok=True)
     
         self.numPnetworks = kwargs.get("num_networks") 
         self.T = kwargs.get("T")
         self.numTsteps = kwargs.get("num_T_steps")
+        self.t = np.linspace(0,float(self.T),int(self.numTsteps)+1)
         self.E =  kwargs.get("E")
         self.nu = kwargs.get("nu")
         self.element_type = kwargs.get("element_type")
@@ -62,7 +62,6 @@ class MPET:
 
         #For each network
         self.mu_f = kwargs.get("mu_f")
-        print("mu_f:",self.mu_f)
         self.kappa = kwargs.get("kappa")
         self.alpha_val = kwargs.get("alpha")
         self.c_val = kwargs.get("c")
@@ -70,7 +69,6 @@ class MPET:
         p_initial0 =  sum([-x*y for x,y in zip(self.alpha_val,self.p_initial)])
         self.p_initial.insert(0,p_initial0)
         self.gamma = np.reshape(kwargs.get("gamma"),(self.numPnetworks,self.numPnetworks))
-        print("gamma:",self.gamma)
         self.K_val = []
 
         
@@ -89,7 +87,8 @@ class MPET:
             
         
         self.sourceFile = kwargs.get("source_file")
-        self.g = [ReadSourceTerm(self.mesh,self.sourceFile,self.T),None,None]
+        self.scaleMean = kwargs.get("scale_mean")
+        self.g = [self.ReadSourceTerm(),None,None]
 
         self.Lambda = self.nu*self.E/((1+self.nu)*(1-2*self.nu))
         self.mu = self.E/(2*(1+self.nu))        
@@ -110,6 +109,7 @@ class MPET:
 
         self.beta_VEN = kwargs.get("beta_ven")
         self.beta_SAS = kwargs.get("beta_sas")
+
         self.p_BC_initial = [kwargs.get("p_ven_initial"),kwargs.get("p_sas_initial")]
 
 
@@ -169,15 +169,15 @@ class MPET:
             xdmfP.append(XDMFFile(self.filesave + "/FEM_results/p" + str(i+1) + ".xdmf"))        
             xdmfP[i].parameters["flush_output"]=True
 
+        #f for float value, not dolfin expression
+        p_VEN_f = self.p_BC_initial[0]
+        p_SAS_f = self.p_BC_initial[1]
 
-        p_VEN = self.p_BC_initial[0]
-        p_SAS = self.p_BC_initial[1]
 
+        print("P_VEN =,", p_VEN_f)
+        print("P_SAS =,", p_SAS_f)
 
-        print("P_VEN =,", p_VEN)
-        print("P_SAS =,", p_SAS)
-
-        
+                
         # Generate function space
         V = VectorElement(self.element_type, self.mesh.ufl_cell(), 2, self.dim)  # Displacements
 
@@ -249,10 +249,11 @@ class MPET:
                 self.g[i], dolfin.cpp.adaptivity.TimeSeries
             ):  # If the source term is a time series instead of a an expression
                 print("Adding timeseries for source term")
-                g_space = FunctionSpace(self.mesh, mixedElement[i + 2])
+                g_space = FunctionSpace(self.mesh, "CG",1)
                 g_i = Function(g_space)
                 sources.append(F(g_i, q[i + 2]))  # Applying source term
                 self.time_expr.append((self.g[i], g_i))
+
             elif self.g[i] is not None:
                 print("Adding expression for source term")
                 sources.append(F(self.g[i], q[i + 2]))  # Applying source term
@@ -337,13 +338,13 @@ class MPET:
             results["dV_SAS_PREV"] = dV_PREV_SAS
             results["dV_VEN_PREV"] = dV_PREV_VEN
             
-            p_SAS, p_VEN,V_dot = self.windkessel_model(p_SAS,p_VEN,results) #calculates windkessel pressure @ t
+            p_SAS_f, p_VEN_f,V_dot = self.coupled_2P_model(p_SAS_f,p_VEN_f,results) #calculates windkessel pressure @ t
 
-            self.update_windkessel_expr(p_SAS,p_VEN) # Update all terms dependent on the windkessel pressures
+            self.update_windkessel_expr(p_SAS_f,p_VEN_f) # Update all terms dependent on the windkessel pressures
 
 
-            results["p_SAS"] = p_SAS
-            results["p_VEN"] = p_VEN
+            results["p_SAS"] = p_SAS_f
+            results["p_VEN"] = p_VEN_f
             results["V_dot"] = V_dot
             results["t"] = t
 
@@ -361,21 +362,24 @@ class MPET:
         res = split(up)
         u = project(res[0], W.sub(0).collapse())
         p = []
-
+        
         self.u_sol = u
         self.p_sol = p
 
     def plotResults(self):
 
         plotDir = "%s/plots/" %self.filesave
+        plotCycle = 2 #Start plot after the second cycle
+        initPlot = int(self.numTsteps/self.T*plotCycle) 
 
-        its = None
         dV_fig, dV_ax = pylab.subplots(figsize=(12, 8))
         V_dot_fig, V_dot_ax = pylab.subplots(figsize=(12, 8))
         PW_figs, PW_axs  = pylab.subplots(figsize=(12, 8)) #Pressure Windkessel
         Q_figs, Q_axs  = pylab.subplots(figsize=(12, 8)) #Outflow CSF
         BV_figs, BV_axs  = pylab.subplots(figsize=(12, 8)) #Outflow venous blood
-        p_figs, p_axs = pylab.subplots(figsize=(12, 8))
+        pmax_figs, pmax_axs = pylab.subplots(figsize=(12, 8))
+        pmin_figs, pmin_axs = pylab.subplots(figsize=(12, 8))
+        pmean_figs, pmean_axs = pylab.subplots(figsize=(12, 8))
         v_fig, v_ax = pylab.subplots(figsize=(12, 8))
         t_fig, t_ax = pylab.subplots(figsize=(12, 8))
         
@@ -383,18 +387,17 @@ class MPET:
         colors = ["crimson", "navy", "cornflowerblue"]
         markers = [".-", ".-", ".-"]
 
-        x_ticks = [0.5*i for i in range(int(self.T/0.5)+1)]
+        x_ticks = [plotCycle + 0.5*i for i in range(int(self.T/0.5)+1-plotCycle*2)]
 
         print("x_ticks:",x_ticks)
 
         df = self.load_data()
         names = df.columns
         times = (df["t"].to_numpy())
-        
          # Plot volume 
-        dV_ax.plot(times, df["dV"], markers[0], color="seagreen",label="div(u)dx")
-        dV_ax.plot(times, df["dV_SAS"], markers[1], color="darkmagenta",label="(u * n)ds_{SAS}")
-        dV_ax.plot(times, df["dV_VEN"], markers[2], color="royalblue",label="(u * n)ds_{VEN}")
+        dV_ax.plot(times[initPlot:-1], df["dV"][initPlot:-1], markers[0], color="seagreen",label="div(u)dx")
+        dV_ax.plot(times[initPlot:-1], df["dV_SAS"][initPlot:-1], markers[1], color="darkmagenta",label="(u * n)ds_{SAS}")
+        dV_ax.plot(times[initPlot:-1], df["dV_VEN"][initPlot:-1], markers[2], color="royalblue",label="(u * n)ds_{VEN}")
         dV_ax.set_xlabel("time (s)")
         dV_ax.set_xticks(x_ticks)
         dV_ax.set_ylabel("dV (mm$^3$)")
@@ -403,7 +406,8 @@ class MPET:
         dV_fig.savefig(plotDir + "brain-dV.png")
 
         # Plot volume derivative
-        V_dot_ax.plot(times, df["V_dot"], markers[0], color="seagreen",label="div(u)dx")
+        V_dot_ax.plot(times[initPlot:-1], df["V_dot"][initPlot:-1], markers[0], color="seagreen",label="div(u)dx")
+        
         V_dot_ax.set_xlabel("time (s)")
         V_dot_ax.set_xticks(x_ticks)
         V_dot_ax.set_ylabel("V_dot (mm$^3$/s)")
@@ -414,21 +418,42 @@ class MPET:
         
         # Plot max/min of the pressures
         for i in range(1,self.numPnetworks+1):
-            p_axs.plot(times, df["max_p_%d" % i], markers[0],
+            pmax_axs.plot(times[initPlot:-1], df["max_p_%d" % i][initPlot:-1], markers[0],
                        color=colors[i-1], label="$p_%d$" % i,)
 
-            p_axs.set_xlabel("time (s)")
-            p_axs.set_xticks(x_ticks)
-            p_axs.set_ylabel("$\max \, p$ (Pa)")
-            p_axs.grid(True)
-            p_axs.legend()
-        p_figs.savefig(plotDir + "brain-ps.png")
+            pmax_axs.set_xlabel("time (s)")
+            pmax_axs.set_xticks(x_ticks)
+            pmax_axs.set_ylabel("$\max \, p$ (Pa)")
+            pmax_axs.grid(True)
+            pmax_axs.legend()
+
+            pmin_axs.plot(times[initPlot:-1], df["min_p_%d" % i][initPlot:-1], markers[0],
+                       color=colors[i-1], label="$p_%d$" % i,)
+
+            pmin_axs.set_xlabel("time (s)")
+            pmin_axs.set_xticks(x_ticks)
+            pmin_axs.set_ylabel("$\min \, p$ (Pa)")
+            pmin_axs.grid(True)
+            pmin_axs.legend()
+
+            pmean_axs.plot(times[initPlot:-1], df["mean_p_%d" % i][initPlot:-1], markers[0],
+                       color=colors[i-1], label="$p_%d$" % i,)
+
+            pmean_axs.set_xlabel("time (s)")
+            pmean_axs.set_xticks(x_ticks)
+            pmean_axs.set_ylabel("average P (Pa)")
+            pmean_axs.grid(True)
+            pmean_axs.legend()
+
+        pmax_figs.savefig(plotDir + "brain-p_max.png")
+        pmin_figs.savefig(plotDir + "brain-p_min.png")
+        pmean_figs.savefig(plotDir + "brain-p_avg.png")
 
 
         
         # Plot average compartment velocity (avg v_i)
         for i in range(1,self.numPnetworks+1):
-                v_ax.plot(times, df["v%d_avg" % i], markers[0], color=colors[i-1],
+                v_ax.plot(times[initPlot:-1], df["v%d_avg" % i][initPlot:-1], markers[0], color=colors[i-1],
                           label="$v_%d$" % i)
         v_ax.set_xlabel("time (s)")
         v_ax.set_xticks(x_ticks)
@@ -443,8 +468,8 @@ class MPET:
 
 
         # Plot outflow of CSF
-        Q_axs.plot(times, Q_SAS, markers[0], color="seagreen",label="$Q_{SAS}$")
-        Q_axs.plot(times, Q_VEN, markers[0], color="darkmagenta",label="$Q_{VEN}$")
+        Q_axs.plot(times[initPlot:-1], Q_SAS[initPlot:-1], markers[0], color="seagreen",label="$Q_{SAS}$")
+        Q_axs.plot(times[initPlot:-1], Q_VEN[initPlot:-1], markers[0], color="darkmagenta",label="$Q_{VEN}$")
         Q_axs.set_xlabel("time (s)")
         Q_axs.set_xticks(x_ticks)
         Q_axs.set_ylabel("Q (mm$^3$/s)")
@@ -455,7 +480,7 @@ class MPET:
         BV = df["Q_SAS_N2"] + df["Q_VEN_N2"] 
         
         # Plot outflow of venous blood
-        BV_axs.plot(times, BV, markers[0], color="seagreen")
+        BV_axs.plot(times[initPlot:-1], BV[initPlot:-1], markers[0], color="seagreen")
         BV_axs.set_xlabel("time (s)")
         BV_axs.set_xticks(x_ticks)
         BV_axs.set_ylabel("Venous outflow (mm$^3$/s)")
@@ -464,8 +489,8 @@ class MPET:
 
 
         # Plot Windkessel pressure
-        PW_axs.plot(times, df["p_SAS"], markers[0], color="seagreen",label="$p_{SAS}$")
-        PW_axs.plot(times, df["p_VEN"], markers[1], color="darkmagenta",label="$p_{VEN}$")
+        PW_axs.plot(times[initPlot:-1], df["p_SAS"][initPlot:-1], markers[0], color="seagreen",label="$p_{SAS}$")
+        PW_axs.plot(times[initPlot:-1], df["p_VEN"][initPlot:-1], markers[1], color="darkmagenta",label="$p_{VEN}$")
         PW_axs.set_xlabel("time (s)")
         PW_axs.set_xticks(x_ticks)
         PW_axs.set_ylabel("P ($Pa$)")
@@ -475,8 +500,8 @@ class MPET:
 
 
         # Plot transfer rates (avg v_i)
-        t_ax.plot(times, df["T12"], markers[0], color="darkmagenta", label="$T_{12}$")
-        t_ax.plot(times, df["T13"], markers[0], color="royalblue", label="$T_{13}$")
+        t_ax.plot(times[initPlot:-1], df["T12"][initPlot:-1], markers[0], color="darkmagenta", label="$T_{12}$")
+        t_ax.plot(times[initPlot:-1], df["T13"][initPlot:-1], markers[0], color="royalblue", label="$T_{13}$")
         t_ax.set_xlabel("time (s)")
         t_ax.set_xticks(x_ticks)
         t_ax.set_ylabel("Transfer rate ($L^2$-norm)")
@@ -484,12 +509,8 @@ class MPET:
         t_ax.legend()
         t_fig.savefig(plotDir + "brain-Ts.png")
     
-        pylab.show()
         
-    def printResults():
-
-        return 0
-
+  
 
     def generate_diagnostics(self,*args):
         results = {}
@@ -501,37 +522,34 @@ class MPET:
         # Change of volume:
         dV = assemble(div(u)*dx)
         results["dV"] = dV
-        print("div(u)*dx (mm^3) = ", dV)
+        #print("div(u)*dx (mm^3) = ", dV)
 
         V = VectorFunctionSpace(self.mesh, "DG", 0)
 
-        print("len p_list:",len(p_list))
         # Pressures
         for (i, p) in enumerate(p_list):
-            print("max(p_%d) (Pa) = " % (i), max(p.vector()))
-            print("min(p_%d) (Pa) = " % (i), min(p.vector()))
             results["max_p_%d" % (i)] = max(p.vector())
             results["min_p_%d" % (i)] = min(p.vector())
-
+            results["mean_p_%d" % (i)] = np.mean(p.vector())
+            
             A = np.sqrt(assemble(1*dx(self.mesh)))
             if i > 0: # Darcy velocities
                 v = project(self.K[i-1]*grad(p), V)
                 v_avg = norm(v, "L2")/A
-                print("avg_v%d(mm/s) = " % (i), v_avg)
                 results["v%d_avg" % (i)] = v_avg
 
                 #Calculate outflow for each network
                 results["Q_SAS_N%d" %(i)] = assemble(-self.K[i-1] * dot(grad(p), self.n) * self.ds(1))
                 results["Q_VEN_N%d" %(i)] = assemble(-self.K[i-1] * dot(grad(p), self.n) * self.ds(2)) + assemble(
                 -self.K[i-1] * dot(grad(p),self.n) * self.ds(3))
-                print("Q_SAS_N%d:" %(i),results["Q_SAS_N%d" %(i)])
-                print("Q_VEN_N%d:" %(i),results["Q_VEN_N%d" %(i)])
+                #print("Q_SAS_N%d:" %(i),results["Q_SAS_N%d" %(i)])
+                #print("Q_VEN_N%d:" %(i),results["Q_VEN_N%d" %(i)])
 
             
-        
 
         results["dV_SAS"] = assemble(dot(u,self.n)*self.ds(1))
         results["dV_VEN"] = assemble(dot(u,self.n)*self.ds(2)) + assemble(dot(u,self.n)*self.ds(3))
+        
 
         # Transfer rates
         S = FunctionSpace(self.mesh, "CG", 1)
@@ -543,20 +561,20 @@ class MPET:
         return results
  
 
+    def simple_mass_WK_model(self,p_SAS,p_VEN,results):
+        """
+        This model couples the ventricles and SAS. Ventricles are modeled with a mass
+        conservation expression and the SAS uses a Windkessel model.
+        """
 
-    def windkessel_model(self,p_SAS,p_VEN,results):
-
-<<<<<<< HEAD
         #Assume only flow from ECS flow out to the CSF filled cavities
 
+        scale = 10**(0)
+
+        print("Pressure for SAS: ", p_SAS)
+        print("Pressure for VEN: ", p_VEN)
         #P_SAS is determined from Windkessel parameters
         Q_SAS = results["Q_SAS_N3"]
-=======
-        #Assume both flow from capillaries and ECS flow out to the CSF filled cavities
-        Q_SAS = results["Q_SAS_N3"] #+ results["Q_SAS_N1"] + results["dV_SAS"]
-        Q_VEN = results["Q_VEN_N3"] + results["Q_VEN_N1"] + results["dV_VEN"]/10
-        
->>>>>>> 7598a07157606fdfde73777a8afbc84ebcda44dd
         print("Q_SAS:",Q_SAS)
 
         #P_VEN is determined from volume change of the ventricles
@@ -565,20 +583,106 @@ class MPET:
 
         #Volume change of ventricles
         V_dot = 1/self.dt*(results["dV_VEN"]-results["dV_VEN_PREV"])
+        print("V_dot:",V_dot)
 
         K = np.pi*self.d**4/(128*self.L*self.mu_f[2]) #Poiseuille flow constant
 
-        p_SAS_next = p_SAS * ( 1 - self.dt / (self.C_SAS * self.R) ) + self.dt/self.C_SAS *( Q_SAS )#+ Q_VEN + V_dot)
+        p_SAS_next = p_SAS  + self.dt/self.C_SAS *( Q_SAS + V_dot + Q_VEN)*scale
  
-        p_VEN_next = p_VEN * ( 1 - self.dt / (self.C_VEN * self.R) ) + self.dt/self.C_VEN *( Q_VEN )
-
-        #Alt model
-        #p_VEN_next = p_SAS_next + 1/K*(Q_VEN + V_dot)
-
-        print("Pressure for SAS: ", p_SAS_next)
-        print("Pressure for VEN: ", p_VEN_next)
+        p_VEN_next = p_SAS_next + 1/K*(Q_VEN + V_dot)
 
         return p_SAS_next, p_VEN_next,V_dot
+
+
+    def uncoupled_windkessel_model(self,p_SAS,p_VEN,results):
+        """
+        This model has no coupling between the ventricles and SAS, both compartments are modeled
+        with separate Windkessel models
+        """
+        scale = 10**(0)
+
+        print("Pressure for SAS: ", p_SAS)
+        print("Pressure for VEN: ", p_VEN)
+
+        
+        Q_SAS = results["Q_SAS_N3"]
+        print("Q_SAS:",Q_SAS)
+
+        Q_VEN = results["Q_VEN_N3"]
+        print("Q_VEN:",Q_VEN)
+
+
+
+        p_SAS_next = p_SAS  + self.dt/self.C_SAS *( Q_SAS*scale - p_SAS/self.R)
+ 
+        p_VEN_next = p_VEN  + self.dt/self.C_VEN *( Q_VEN*scale - p_VEN/self.R)
+
+        return p_SAS_next, p_VEN_next,V_dot
+
+    def coupled_2P_model(self,p_SAS,p_VEN,results):
+        """
+        This model couples the two pressures between the ventricles and SAS through the aqueduct, both compartments are modeled
+        with Windkessel models.
+
+        Solves using implicit (backward) Euler
+
+        """
+        #Assume only flow from ECS flow out to the CSF filled cavities
+
+        scale = 10**(0)
+        print("Pressure for SAS: ", p_SAS)
+        print("Pressure for VEN: ", p_VEN)
+        #P_SAS is determined from Windkessel parameters
+        Q_SAS = results["Q_SAS_N3"]
+        print("Q_SAS:",Q_SAS)
+
+        #P_VEN is determined from volume change of the ventricles
+        Q_VEN = results["Q_VEN_N3"]
+        print("Q_VEN:",Q_VEN)
+
+
+        #Volume change of ventricles
+        V_dot = 1/self.dt*(results["dV_VEN"]-results["dV_VEN_PREV"])
+        print("V_dot:",V_dot)
+        K = np.pi*self.d**4/(128*self.L*self.mu_f[2]) #Poiseuille flow constant
+
+        Q_AQ = K*(p_VEN - p_SAS)
+        print("Q_AQ:",Q_AQ)
+        #ALT 1
+        """
+        dp_ven/dt = 1/C*dV/dt
+        dp_sas/dt = 1/C(Q_SAS + K(p_VEN - p_SAS)) 
+        """
+        b_SAS = p_SAS + self.dt/self.C_SAS * Q_SAS
+        b_VEN = p_VEN + self.dt/self.C_VEN *V_dot
+
+        A_11 = 1 + self.dt/self.C_SAS*K
+        A_12 = -self.dt/self.C_SAS*K
+        A_21 = 0
+        A_22 = 1
+
+        #ALT 2
+        """
+        dp_sas/dt = 1/C(Q_SAS + K(p_VEN - p_SAS)) 
+        K(p_ven - p_SAS) = Q_ven - dV/dt 
+
+        b_SAS = p_SAS + self.dt/self.C_SAS * Q_SAS
+        b_VEN = p_VEN + 1/K (Q_VEN-V_dot)
+
+        A_11 = 1 + self.dt*K/self.C_SAS
+        A_12 = -self.dt*K/self.C_SAS
+        A_21 = -K
+        A_22 = K
+        """
+        
+
+
+        b = np.array([b_SAS,b_VEN])
+        A = np.array([[A_11, A_12],[A_21, A_22]])
+
+        x = np.linalg.solve(A,b) #x_0 = p_SAS, x_1 = p_VEN
+
+        return x[0], x[1],V_dot
 
     def applyPressureBC(self,W,p_,q):
         
@@ -777,7 +881,7 @@ class MPET:
                         headers=['Parameter', 'Value', 'Unit']))
 
     def update_time_expr(self,t):
-        for expr in self.time_expr:  
+        for expr in self.time_expr:
             if isinstance(expr, ufl.tensors.ComponentTensor):
                 for dimexpr in expr.ufl_operands:
                     for op in dimexpr.ufl_operands:
@@ -788,10 +892,10 @@ class MPET:
                             pass
             elif isinstance(expr, tuple):
                 if isinstance(expr[0], dolfin.cpp.adaptivity.TimeSeries):
-                    expr[0].retrieve(expr[1].vector(), t)
+                    expr[0].retrieve(expr[1].vector(), t,interpolate=False)
                 else:
                     self.operand_update(expr, t)
-
+                    
             
     def operand_update(self,expr, t):
         if isinstance(expr, ufl.algebra.Operator):
@@ -805,12 +909,13 @@ class MPET:
         for expr in self.windkessel_terms:
             try:
                 expr.p_SAS = p_SAS_next
-                expr.p_VEN = p_VEN_next
+                expr.p_VEN = p_VEN_next 
             except:
                 try:
                     expr.p_SAS = p_SAS_next
                 except:
                     expr.p_VEN = p_VEN_next
+
 
     def load_data(self): 
         it = None
@@ -829,39 +934,31 @@ class MPET:
         
         return df
 
-def ReadSourceTerm(mesh,sourceData,periods):
-    import csv
+    def ReadSourceTerm(self):
+        FileName = self.sourceFile + "series"
+        if os.path.exists(FileName + ".h5"):
+            print("Removing old timeseries")
+            os.remove(FileName + ".h5")
+            
+        g = TimeSeries(FileName)
+        
+        source_scale = 1/1173670.5408281302
 
-    FileName = sourceData + "series"
-    if os.path.exists(FileName + ".h5"):
-        print("Removing old timeseries")
-        os.remove(FileName + ".h5")
+        Q = FunctionSpace(self.mesh,"CG",1)
+        time_period = 1.0
+        data = np.loadtxt(self.sourceFile, delimiter = ",")
+        t = data[:,0]
+        source = data[:,1]
+        dataInterp = np.interp(self.t,t,source,period = 1.0)
 
-    g = TimeSeries(FileName)
-    
-    source_scale = 1/1173670.5408281302
+        if self.scaleMean:
+            dataInterp -= np.mean(dataInterp)
+        source_fig, source_ax = pylab.subplots(figsize=(16, 8))
+        source_ax.plot(self.t,dataInterp)
 
-    Q = FunctionSpace(mesh,"CG",1)
-    time_period = 0.0
-    for i in range(int(periods)):
-        #Read in the source term data
-        with open(sourceData) as csv_file:
-            csv_reader = csv.reader(csv_file, delimiter=',')
-            line_count = 0
-            for row in csv_reader:
-                if line_count == 0:
-                   #print(f'Column names are {", ".join(row)}')
-                   line_count += 1
-                else:
-                   #print(float(row[1]))
-                   source = Constant((float(row[1]))*source_scale) #Uniform source on the domain
-                   source = project(source, Q)
-                   g.store(source.vector(),float(row[0]) + i*time_period)
-                   #print(f"\t timestep {row[0]} adding {row[1]} to the source.")
-                   line_count += 1
-            if i == 0:
-                time_period = float(row[0])
-                print("t =", time_period)
-            print(f'Processed {line_count} lines.')
-    return g
+        for j,data in enumerate(dataInterp):
+            source = Constant((float(data))*source_scale) #Uniform source on the domain
+            source = project(source, Q)
+            g.store(source.vector(),self.t[j])
+        return g
 
