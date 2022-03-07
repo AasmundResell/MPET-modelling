@@ -7,7 +7,7 @@ solver_settings:
   num_networks : 3
   element_type : CG
   mesh_resolution : 15 #Only for 2D
-  file_save : 3Network_ABS_scaled_results
+  file_save : 3Network_ABP_scaled_results
 
 material_parameters:
   E : 1642 # Pa, Young modulus

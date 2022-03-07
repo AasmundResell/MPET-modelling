@@ -101,9 +101,9 @@ def run_MPET_2D_AbsoluteInflow():
 
     Solver2D.plotResults()
  
-def run_MPET_2D_AbsoluteInflow_scaled():
+def run_MPET_2D_AbsoluteInflow_fixedChannel():
 
-    ymlFile = open("2D_3MPET_AbsAPB_meanScaled.yml") 
+    ymlFile = open("2D_3MPET_AbsAPB_fixedChannel.yml") 
     parsedValues = yaml.load(ymlFile, Loader=yaml.FullLoader)
     materialParameters = parsedValues['material_parameters']
     settings = parsedValues['solver_settings']
@@ -134,9 +134,9 @@ def run_MPET_2D_AbsoluteInflow_scaled():
     #Generate boundary conditions for the displacements
     #The integer keys represents a boundary (marker)
     boundary_conditionsU = {
-        1: {"Dirichlet": U},
+        1: {"NeumannWK": pSkull},
         2: {"NeumannWK": pVentricles},
-        3: {"NeumannWK": pVentricles},
+        3: {"Dirichlet": U},
     }
     
     #Generate boundary conditions for the fluid pressures
@@ -209,5 +209,5 @@ def generateUFL_BCexpressions():
 
 if __name__ == "__main__":
     run_MPET_2D_AbsoluteInflow()
-    run_MPET_2D_AbsoluteInflow_scaled()
+#    run_MPET_2D_AbsoluteInflow_fixedChannel()
 #    run_MPET_2D_RelativeInflow()

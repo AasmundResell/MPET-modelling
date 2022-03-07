@@ -7,7 +7,7 @@ solver_settings:
   num_networks : 3
   element_type : CG
   mesh_resolution : 15 #Only for 2D
-  file_save : 3Network_ABS_results
+  file_save : 3Network_ABP_results
 
 material_parameters:
   E : 1642 # Pa, Young modulus
@@ -46,11 +46,12 @@ material_parameters:
 
 
 boundary_parameters:
-  Compliance_sas : 25 # [microL/mmHg]
+  Compliance_sas : 25 # [microL/mmHg] for all compliances
   Compliance_ven : 70
+  Compliance_sp : 700 #Should be larger than the others, ie. small dP gives large dV
   Resistance : 100.81 # [mmHg*min/mL]
-  beta_sas : 1.0e-1 
-  beta_ven : 1.0e-1
+  beta_sas : 1.0e-4 
+  beta_ven : 1.0e-4
   p_sas_initial : 150
   p_ven_initial : 150
   p_vein : 0.0 # Back pressure, vein network

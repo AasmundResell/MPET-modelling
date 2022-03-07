@@ -97,9 +97,12 @@ class MPET:
 
         #Boundary parameters
         if kwargs.get("Compliance_sas"):
-            self.C_SAS =  kwargs.get("Compliance_sas")/self.conversionP # [microL/mmHg] to [mm^3/Pa]
+            self.C_SAS =  kwargs.get("Compliance_sas")  # [mm^3/mmHg]
         if kwargs.get("Compliance_ven"):
-            self.C_VEN =  kwargs.get("Compliance_ven")/self.conversionP # [microL/mmHg] to [mm^3/Pa]
+            self.C_VEN =  kwargs.get("Compliance_ven") # [mm^3/mmHg]
+        if kwargs.get("Compliance_sp"):
+            self.C_SP =  kwargs.get("Compliance_sp") # [mm^3/mmHg]
+
         if kwargs.get("Resistance"):
             self.R =  kwargs.get("Resistance")*self.conversionP*60e-3 # [mmHg*min/mL] to [Pa*/mm^3]
 
@@ -338,14 +341,14 @@ class MPET:
             results["dV_SAS_PREV"] = dV_PREV_SAS
             results["dV_VEN_PREV"] = dV_PREV_VEN
             
-            p_SAS_f, p_VEN_f,V_dot = self.coupled_2P_model(p_SAS_f,p_VEN_f,results) #calculates windkessel pressure @ t
+            p_SAS_f, p_VEN_f,Vv_dot,Vs_dot = self.coupled_2P_model(p_SAS_f,p_VEN_f,results) #calculates windkessel pressure @ t
 
             self.update_windkessel_expr(p_SAS_f,p_VEN_f) # Update all terms dependent on the windkessel pressures
 
 
             results["p_SAS"] = p_SAS_f
             results["p_VEN"] = p_VEN_f
-            results["V_dot"] = V_dot
+            results["V_dot"] = Vv_dot + Vs_dot #Total volume change
             results["t"] = t
 
             dV_PREV_SAS = results["dV_SAS"]
@@ -611,6 +614,23 @@ class MPET:
         Q_VEN = results["Q_VEN_N3"]
         print("Q_VEN:",Q_VEN)
 
+        #ALT 3
+        """
+        dp_ven/dt = 1/C*dV/dt
+        dp_sas/dt = 1/C*dV/dt
+
+        b_SAS = p_SAS + self.dt/self.C_SAS * Vs_dot
+        b_VEN = p_VEN + self.dt/self.C_VEN *Vv_dot
+
+        A_11 = 1
+        A_12 = 0
+        A_21 = 0
+        A_22 = 1
+
+        b = np.array([b_SAS,b_VEN])
+        A = np.array([[A_11, A_12],[A_21, A_22]])
+
+        """
 
 
         p_SAS_next = p_SAS  + self.dt/self.C_SAS *( Q_SAS*scale - p_SAS/self.R)
@@ -642,16 +662,97 @@ class MPET:
 
 
         #Volume change of ventricles
-        V_dot = 1/self.dt*(results["dV_VEN"]-results["dV_VEN_PREV"])
-        print("V_dot:",V_dot)
-        K = np.pi*self.d**4/(128*self.L*self.mu_f[2]) #Poiseuille flow constant
+        Vv_dot = 1/self.dt*(results["dV_VEN"]-results["dV_VEN_PREV"])
+        #Volume change of SAS
+        Vs_dot = 1/self.dt*(results["dV_SAS"]-results["dV_SAS_PREV"])
 
-        Q_AQ = K*(p_VEN - p_SAS)
+        print("Volume change ventricles:",Vv_dot)
+        print("Volume change SAS",Vs_dot)
+
+        #Conductance
+        G_aq = np.pi*self.d**4/(128*self.L*self.mu_f[2]) #Poiseuille flow constant
+      
+        Q_AQ = G_aq*(p_VEN - p_SAS)
+        print("Q_AQ:",Q_AQ)
+
+        #ALT 1
+        """
+        dp_ven/dt = 1/C*dV_ven/dt
+        dp_sas/dt = 1/C(Q_SAS + G_aq(p_VEN - p_SAS))
+
+        b_SAS = p_SAS + self.dt/self.C_SAS * Q_SAS
+        b_VEN = p_VEN + self.dt/self.C_VEN *V_dot
+
+        A_11 = 1 + self.dt/self.C_SAS*G_aq
+        A_12 = -self.dt/self.C_SAS*G_aq
+        A_21 = 0
+        A_22 = 1
+        """
+
+        #ALT 2
+        """
+        dp_sas/dt = 1/C_sas(Vs_dot + Q_SAS + C_aq(p_VEN - p_SAS))
+        dp_ven/dt = 1/C_ven(Vv_dot + Q_VEn + C_aq(p_SAS - p_VEN))
+        
+        """
+
+        b_SAS = p_SAS + self.dt/self.C_SAS * (Q_SAS + Vs_dot)
+        b_VEN = p_VEN + self.dt/self.C_VEN *(Q_VEN + Vv_dot)
+
+        A_11 = 1 + self.dt*G_aq/self.C_SAS
+        A_12 = -self.dt*G_aq/self.C_SAS
+        A_21 = -self.dt*G_aq/self.C_VEN
+        A_22 = 1 + self.dt*G_aq/self.C_VEN
+        
+
+        x = np.linalg.solve(A,b) #x_0 = p_SAS, x_1 = p_VEN
+
+        return x[0], x[1],Vv_dot,Vs_dot
+
+    def coupled_3P_model(self,p_SAS,p_VEN,p_SP,results):
+        """
+        This model calculates a 3-pressure lumped model for the SAS, ventricles and spinal-SAS compartments
+
+        Solves using implicit (backward) Euler
+
+        """
+        #Assume only flow from ECS flow out to the CSF filled cavities
+
+        scale = 10**(0)
+        print("Pressure for SAS: ", p_SAS)
+        print("Pressure for ventricles: ", p_VEN)
+        print("Pressure in spinal-SAS:", p_SP)
+
+        #P_SAS is determined from Windkessel parameters
+        Q_SAS = results["Q_SAS_N3"]
+        print("Q_SAS:",Q_SAS)
+
+        #P_VEN is determined from volume change of the ventricles
+        Q_VEN = results["Q_VEN_N3"]
+        print("Q_VEN:",Q_VEN)
+
+
+        #Volume change of ventricles
+        Vv_dot = 1/self.dt*(results["dV_VEN"]-results["dV_VEN_PREV"])
+        #Volume change of SAS
+        Vs_dot = 1/self.dt*(results["dV_SAS"]-results["dV_SAS_PREV"])
+
+        print("Volume change ventricles:",Vv_dot)
+        print("Volume change SAS",Vs_dot)
+
+        #Conductance
+        G_aq = np.pi*self.d**4/(128*self.L*self.mu_f[2]) #Poiseuille flow constant
+        G_sas = G_aq*5 #From LM article
+        G_fm = G_aq*10 #From LM article
+        Q_AQ = G_aq*(p_VEN - p_4SAS)
+        Q_FM = G_aq*(p_VEN - p_4SAS)
+
         print("Q_AQ:",Q_AQ)
         #ALT 1
         """
         dp_ven/dt = 1/C*dV/dt
-        dp_sas/dt = 1/C(Q_SAS + K(p_VEN - p_SAS)) 
+        dp_sas/dt = 1/C(Q_SAS + K(p_VEN - p_SAS))
+
         """
         b_SAS = p_SAS + self.dt/self.C_SAS * Q_SAS
         b_VEN = p_VEN + self.dt/self.C_VEN *V_dot
@@ -667,14 +768,93 @@ class MPET:
         K(p_ven - p_SAS) = Q_ven - dV/dt 
 
         b_SAS = p_SAS + self.dt/self.C_SAS * Q_SAS
-        b_VEN = p_VEN + 1/K (Q_VEN-V_dot)
+        b_VEN = p_VEN + 1/K*(Q_VEN-V_dot)
 
         A_11 = 1 + self.dt*K/self.C_SAS
         A_12 = -self.dt*K/self.C_SAS
         A_21 = -K
         A_22 = K
-        """
         
+        """
+
+
+        b = np.array([b_SAS,b_VEN,b_SP])
+        A = np.array([[A_11, A_12],[A_21, A_22]])
+
+        x = np.linalg.solve(A,b) #x_0 = p_SAS, x_1 = p_VEN
+
+        return x[0], x[1], Vv_dot, Vs_dot
+
+
+    def coupled_4P_model(self,p_SAS,p_VEN,p_4VEN,p_SP,results):
+        """
+        This model couples the two pressures between the ventricles and SAS through the aqueduct, both compartments are modeled
+        with Windkessel models.
+
+        Solves using implicit (backward) Euler
+
+        """
+        #Assume only flow from ECS flow out to the CSF filled cavities
+
+        scale = 10**(0)
+        print("Pressure for SAS: ", p_SAS)
+        print("Pressure for inner ventricles: ", p_VEN)
+        print("Pressure for fourth ventricle: ", p_4VEN)
+        print("Pressure in spinal compartment:", p_SP)
+
+        #P_SAS is determined from Windkessel parameters
+        Q_SAS = results["Q_SAS_N3"]
+        print("Q_SAS:",Q_SAS)
+
+        #P_VEN is determined from volume change of the ventricles
+        Q_VEN = results["Q_VEN_N3"]
+        print("Q_VEN:",Q_VEN)
+
+
+        #Volume change of ventricles
+        Vv_dot = 1/self.dt*(results["dV_VEN"]-results["dV_VEN_PREV"])
+        #Volume change of SAS
+        Vs_dot = 1/self.dt*(results["dV_SAS"]-results["dV_SAS_PREV"])
+
+        print("Volume change ventricles:",Vv_dot)
+        print("Volume change SAS",Vs_dot)
+
+        #Conductance
+        G_aq = np.pi*self.d**4/(128*self.L*self.mu_f[2]) #Poiseuille flow constant
+        G_sas = G_aq*5 #From LM article
+        G_fm = G_aq*10 #From LM article
+        Q_AQ = G_aq*(p_VEN - p_4SAS)
+        Q_FM = G_aq*(p_VEN - p_4SAS)
+
+        print("Q_AQ:",Q_AQ)
+        #ALT 1
+        """
+        dp_ven/dt = 1/C*dV/dt
+        dp_sas/dt = 1/C(Q_SAS + K(p_VEN - p_SAS))
+
+        """
+        b_SAS = p_SAS + self.dt/self.C_SAS * Q_SAS
+        b_VEN = p_VEN + self.dt/self.C_VEN *V_dot
+
+        A_11 = 1 + self.dt/self.C_SAS*K
+        A_12 = -self.dt/self.C_SAS*K
+        A_21 = 0
+        A_22 = 1
+
+        #ALT 2
+        """
+        dp_sas/dt = 1/C(Q_SAS + K(p_VEN - p_SAS)) 
+        K(p_ven - p_SAS) = Q_ven - dV/dt 
+
+        b_SAS = p_SAS + self.dt/self.C_SAS * Q_SAS
+        b_VEN = p_VEN + 1/K*(Q_VEN-V_dot)
+
+        A_11 = 1 + self.dt*K/self.C_SAS
+        A_12 = -self.dt*K/self.C_SAS
+        A_21 = -K
+        A_22 = K
+        
+        """
 
 
         b = np.array([b_SAS,b_VEN])
@@ -867,14 +1047,15 @@ class MPET:
                         ['rho', self.rho, "kg/m³"],
                         ['c', self.c_val, "1/Pa"],
                         ['kappa', self.kappa, 'mm^2'],
-                        ['mu_f', self.mu_f],
+                        ['mu_f', self.mu_f, 'Pa*s'],
                         ['alpha', self.alpha_val],
                         ['gamma', self.gamma, "1/Pa"]],
                        headers=['Parameter', 'Value', 'Unit']))
 
 
         print("\n BOUNDARY PARAMETERS\n")
-        print(tabulate([['Compliance SAS', self.C_SAS, 'mm^3/Pa'],
+        print(tabulate([['Compliance SAS', self.C_SAS, 'mm^3/mmHg'],
+                        ['Compliance Ventricles', self.C_VEN, 'mm^3/mmHg'],
                         ['Resistance', self.R, 'Pa/s/mm^3'],
                         ['beta SAS', self.beta_SAS, '--' ],
                         ['beta ventricles', self.beta_VEN, '--']],
