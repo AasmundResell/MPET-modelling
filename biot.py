@@ -54,7 +54,7 @@ def solve(mesh, u_nullspace,markers,T):
     f = Constant((0,)*dim)
     p1 = Expression("4.9 *sin(2*pi*t) + 13.7*sin(0.5*pi*t)", degree=1, t=time)
     n = FacetNormal(mesh)
-
+    
     sigma = lambda u: elastic_stress(u, E, nu)
 
     V = VectorElement("CG", mesh.ufl_cell(), 2)
@@ -83,11 +83,11 @@ def solve(mesh, u_nullspace,markers,T):
     F = inner(sigma(u), sym(grad(v)))*dx() - p*div(v)*dx() \
       + c/dt*p*q*dx() + 1/dt*div(u)*q*dx() + K*inner(grad(p),grad(q))*dx()
 
-    if u_nullspace:
+    if u_nullspace: 
         F += sum(z[i]*inner(v, Z[i])*dx() for i in range(dimZ)) \
              + sum(r[i]*inner(u, Z[i])*dx() for i in range(dimZ))
         bcs = []
-    else:
+    else: #Applies fixed displacements on SAS/Pial
         bcs = [DirichletBC(VZ.sub(0), Constant((0,)*d), markers, PIAL_MARKER)]
 
     L0 = inner(-p1*n, v)*dsm(PIAL_MARKER) +inner(-p1*n, v)*dsm(BRAIN_STEM_MARKER) + c/dt*p_*q*dx() + 1/dt*div(u_)*q*dx()
@@ -149,7 +149,7 @@ def solve(mesh, u_nullspace,markers,T):
 if __name__ == '__main__':
 
     #meshfile = "donut2D.h5"  
-    meshfile = "meshes/parenchyma6.h5" 
+    meshfile = "/home/asmund/dev/MPET-modelling/meshes/parenchyma16_with_DTI.h5" 
 
     mesh, markers, u_nullspace = problem(meshfile)
     solve(mesh, u_nullspace, markers, 4)
