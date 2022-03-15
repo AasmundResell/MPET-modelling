@@ -35,7 +35,14 @@ class MPET:
         self.boundary_markers = boundary_markers
         self.boundary_conditionsU = boundary_conditionsU
         self.boundary_conditionsP = boundary_conditionsP
-        self.boundaryNum=3 #Number of boundaries
+        #Number of boundaries
+
+        if kwargs.get("num_boundaries"):
+            self.boundaryNum=int(kwargs.get("num_boundaries"))
+        else:
+            self.boundaryNum=3
+
+        print("Number of boundaries:",self.boundaryNum)
         self.filesave = kwargs.get("file_save")
         self.uNullspace = kwargs.get("uNullspace")
 
@@ -375,15 +382,15 @@ class MPET:
             results["dV_SAS_PREV"] = dV_PREV_SAS
             results["dV_VEN_PREV"] = dV_PREV_VEN
             
-            #p_SAS_f, p_VEN_f,Vv_dot,Vs_dot = self.coupled_2P_model(p_SAS_f,p_VEN_f,results) #calculates windkessel pressure @ t
-            p_SAS_f, p_VEN_f,p_SP_f,Vv_dot,Vs_dot = self.coupled_3P_model(p_SAS_f,p_VEN_f,p_SP_f,results) #calculates windkessel pressure @ t
+            p_SAS_f, p_VEN_f,Vv_dot,Vs_dot = self.coupled_2P_model(p_SAS_f,p_VEN_f,results) #calculates windkessel pressure @ t
+            #p_SAS_f, p_VEN_f,p_SP_f,Vv_dot,Vs_dot = self.coupled_3P_model(p_SAS_f,p_VEN_f,p_SP_f,results) #calculates windkessel pressure @ t
             self.update_windkessel_expr(p_SAS_f,p_VEN_f) # Update all terms dependent on the windkessel pressures
 
 
             results["p_SAS"] = p_SAS_f
             results["p_VEN"] = p_VEN_f
-            if p_SP_f:
-                results["p_SP"] = p_SP_f
+            #if p_SP_f:
+            #    results["p_SP"] = p_SP_f
             results["Vv_dot"] = Vv_dot
             results["Vs_dot"] =  Vs_dot
             results["t"] = t
@@ -543,8 +550,8 @@ class MPET:
         PW_axs.plot(times[initPlot:-1], df["p_SAS"][initPlot:-1], markers[0], color="seagreen",label="$p_{SAS}$")
         PW_axs.plot(times[initPlot:-1], df["p_VEN"][initPlot:-1], markers[1], color="darkmagenta",label="$p_{VEN}$")
 
-        if df["p_SP"]:
-            PW_axs.plot(times[initPlot:-1], df["p_SP"][initPlot:-1], markers[1], color="cornflowerblue",label="$p_{VEN}$")
+        if "p_SP" in df:
+            PW_axs.plot(times[initPlot:-1], df["p_SP"][initPlot:-1], markers[1], color="cornflowerblue",label="$p_{SP}$")
 
 
         PW_axs.set_xlabel("time (s)")
@@ -713,13 +720,13 @@ class MPET:
         
         #Volume change of ventricles
         Vv_dot = 1/self.dt*(results["dV_VEN"]-results["dV_VEN_PREV"])
-        Vv_dot = max([-V_dotRange, min([Vv_dot,V_dotRange])])
+        Vv_dot_WK = max([-V_dotRange, min([Vv_dot,V_dotRange])]) #Used in the WK model
 
 
         #Volume change of SAS
         Vs_dot = 1/self.dt*(results["dV_SAS"]-results["dV_SAS_PREV"])
 
-        Vs_dot = max([-V_dotRange, min([Vs_dot,V_dotRange])])
+        Vs_dot_WK = max([-V_dotRange, min([Vs_dot,V_dotRange])]) #Used in the WK model
         print("Volume change ventricles:",Vv_dot)
         print("Volume change SAS",Vs_dot)
 
@@ -750,8 +757,8 @@ class MPET:
         
         """
 
-        b_SAS = p_SAS + self.dt/self.C_SAS * (Q_SAS + Vs_dot)
-        b_VEN = p_VEN + self.dt/self.C_VEN * (Q_VEN + Vv_dot)
+        b_SAS = p_SAS + self.dt/self.C_SAS * (Q_SAS + Vs_dot_WK)
+        b_VEN = p_VEN + self.dt/self.C_VEN * (Q_VEN + Vv_dot_WK)
 
         A_11 = 1 + self.dt*G_aq/self.C_SAS
         A_12 = -self.dt*G_aq/self.C_SAS
@@ -764,7 +771,7 @@ class MPET:
 
         x = np.linalg.solve(A,b) #x_0 = p_SAS, x_1 = p_VEN
 
-        return x[0], x[1],x[2],Vv_dot,Vs_dot
+        return x[0], x[1],Vv_dot,Vs_dot
 
     def coupled_3P_model(self,p_SAS,p_VEN,p_SP,results):
         """
@@ -833,8 +840,7 @@ class MPET:
 
         x = np.linalg.solve(A,b) #x_0 = p_SAS, x_1 = p_VEN
 
-        return x[0], x[1], Vv_dot, Vs_dot
-
+        return x[0], x[1],x[2],Vv_dot,Vs_dot
 
     def coupled_4P_model(self,p_SAS,p_VEN,p_4VEN,p_SP,results):
         """
@@ -1012,7 +1018,8 @@ class MPET:
         t = sym.symbols("t")
 
         fx = 0.0 #self.f_val  # force term y-direction
-        fy = 0.0 #self.f_val  # force term y-
+        fy = 0.0 #self.f_val  # force term y
+        fz = 0.0 
         #p_initial0 =  sum([-x*y for x,y in zip(self.alpha_val,self.p_initial_val)])
 
  
@@ -1021,7 +1028,7 @@ class MPET:
             self.Lambda,
             fx,
             fy,
-            #p_initial0,
+            fz,
         ]
 
         variables = [sym.printing.ccode(var) for var in variables]  # Generate C++ code
@@ -1036,18 +1043,18 @@ class MPET:
             self.Lambda_UFL,
             fx_UFL,
             fy_UFL,
-            #p_initial0_UFL,
+            fz_UFL
         ) = UFLvariables
 
-        self.f = as_vector((fx, fy))
+        if self.dim == 2:
+            self.f = as_vector((fx, fy))
+        elif self.dim == 3:
+            self.f = as_vector((fx, fy, fz))
 
-        #self.p_initial = []
         self.alpha = []
         self.c = []
         self.K = []
 
-        #For total pressure
-        #self.p_initial.append(p_initial0_UFL)
         self.alpha.append(Constant(1.0)) 
 
         #For each network
@@ -1056,7 +1063,6 @@ class MPET:
                 self.alpha_val[i],
                 self.c_val[i],
                 self.K_val[i],
-                #self.p_initial_val[i]
             ]
 
             variables = [sym.printing.ccode(var) for var in variables]  # Generate C++ code
@@ -1069,13 +1075,11 @@ class MPET:
                 alpha_UFL,
                 c_UFL,
                 K_UFL,
-                #p_initial_UFL,
             ) = UFLvariables
 
             self.c.append(c_UFL)
             self.K.append(K_UFL)
             self.alpha.append(alpha_UFL)
-            #self.p_initial.append(p_initial_UFL)
         
          
  
@@ -1172,7 +1176,7 @@ class MPET:
             
         g = TimeSeries(FileName)
         
-        source_scale = 1/1173670.5408281302
+        source_scale = 1/1173670.5408281302 #1/mm³
 
         Q = FunctionSpace(self.mesh,"CG",1)
         time_period = 1.0

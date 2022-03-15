@@ -26,10 +26,6 @@ class BoundaryChannel(SubDomain):
         tol = 1e-10
         return on_boundary and (near(x[0], -1, tol) or near(x[0], 1, tol))
 
-class BoundarySpine(SubDomain):
-    def inside(self, x, on_boundary):
-        return 10
-
 def run_MPET_2D_AbsoluteInflow():
 
     ymlFile = open("configurations/2D_3MPET_AbsAPB.yml") 
