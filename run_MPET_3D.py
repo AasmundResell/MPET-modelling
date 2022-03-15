@@ -23,50 +23,19 @@ class BoundaryInner(SubDomain):
 
 def run_MPET_3D_TestSphere():
 
-    ymlFile = open("configurations/3D_TEST_RigidMotion.yml") 
+    ymlFile = open("configurations/3D_TEST_RigidMotion_3PWK.yml") 
     parsedValues = yaml.load(ymlFile, Loader=yaml.FullLoader)
     materialParameters = parsedValues['material_parameters']
     settings = parsedValues['solver_settings']
     sourceParameters = parsedValues['source_data']
     boundaryParameters = parsedValues['boundary_parameters']
 
-
-    
-    """
-    origin = Point(0.0, 0.0, 0.0)
-
-    meshN = settings["mesh_resolution"]
-
-
-
-    r1 = 100  # Outer radius (mm)
-    r2 = 30  # Inner radius  (mm)
-
-    parenchyma = Sphere(origin, r1)
-    ventricles = Sphere(origin, r2)
-    channel = Box(Point(0.0, -50.0, -50.0),Point(100, 50.0, 50.0))
-
-    import numpy as np
-
-    g3d = parenchyma - ventricles #- channel
-
-    # Test printing
-    info("\nCompact output of 3D geometry:")
-    info(g3d)
-    info("\nVerbose output of 3D geometry:")
-    info(g3d, True)
-
-
-    mesh = generate_mesh(g3d, meshN)
-    info(mesh)
-    plot(mesh, "3D mesh")
-    """
     mesh = Mesh("meshes/sphere_mesh/sphere_hollow.xml")
     
     info(mesh)
-    plot(mesh, "3D mesh")
+    #plot(mesh, "3D mesh")
     
-    plt.show()
+    #plt.show()
     
     n = FacetNormal(mesh)  # normal vector on the boundary
     
@@ -107,7 +76,7 @@ def run_MPET_3D_TestSphere():
     }
 
 
-    Solver2D = MPET(
+    Solver3D = MPET(
         mesh,
         boundary_markers,
         boundary_conditionsU,
@@ -118,11 +87,11 @@ def run_MPET_3D_TestSphere():
         **boundaryParameters,
     )
     
-    Solver2D.printSetup()
+    Solver3D.printSetup()
 
-    Solver2D.solve()
+    Solver3D.solve()
 
-    Solver2D.plotResults()
+    Solver3D.plotResults()
  
  
 def generateUFL_BCexpressions():
@@ -161,3 +130,32 @@ def generateUFL_BCexpressions():
 
 if __name__ == "__main__":
     run_MPET_3D_TestSphere()
+    """
+    origin = Point(0.0, 0.0, 0.0)
+
+    meshN = settings["mesh_resolution"]
+
+
+
+    r1 = 100  # Outer radius (mm)
+    r2 = 30  # Inner radius  (mm)
+
+    parenchyma = Sphere(origin, r1)
+    ventricles = Sphere(origin, r2)
+    channel = Box(Point(0.0, -50.0, -50.0),Point(100, 50.0, 50.0))
+
+    import numpy as np
+
+    g3d = parenchyma - ventricles #- channel
+
+    # Test printing
+    info("\nCompact output of 3D geometry:")
+    info(g3d)
+    info("\nVerbose output of 3D geometry:")
+    info(g3d, True)
+
+
+    mesh = generate_mesh(g3d, meshN)
+    info(mesh)
+    plot(mesh, "3D mesh")
+    """

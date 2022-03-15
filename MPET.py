@@ -351,7 +351,7 @@ class MPET:
         [bc.apply(A) for bc in self.bcs_D]
 
         up = Function(W)
-        t = 0.0
+        self.t = 0.0
 
  
         dV_PREV_SAS = 0.0
@@ -359,7 +359,7 @@ class MPET:
       
         for i in range(0,self.numTsteps+1): #Time loop
             
-            self.update_time_expr(t)# Update all time dependent terms
+            self.update_time_expr(self.t)# Update all time dependent terms
             
             b = assemble(rhs)
             for bc in self.bcs_D:
@@ -372,28 +372,31 @@ class MPET:
             up_split = up.split(deepcopy = True)
             results = self.generate_diagnostics(*up_split)
 
-            xdmfU.write(up.sub(0), t)
-            xdmfP0.write(up.sub(1), t)
+            xdmfU.write(up.sub(0), self.t)
+            xdmfP0.write(up.sub(1), self.t)
             for j in range(self.numPnetworks):
-                xdmfP[j].write(up.sub(j+2), t)
+                xdmfP[j].write(up.sub(j+2), self.t)
 
 
             #For calculating volume change in Windkessel model
             results["dV_SAS_PREV"] = dV_PREV_SAS
             results["dV_VEN_PREV"] = dV_PREV_VEN
             
-            p_SAS_f, p_VEN_f,Vv_dot,Vs_dot = self.coupled_2P_model(p_SAS_f,p_VEN_f,results) #calculates windkessel pressure @ t
-            #p_SAS_f, p_VEN_f,p_SP_f,Vv_dot,Vs_dot = self.coupled_3P_model(p_SAS_f,p_VEN_f,p_SP_f,results) #calculates windkessel pressure @ t
+            #p_SAS_f, p_VEN_f,Vv_dot,Vs_dot,Q_AQ = self.coupled_2P_model(p_SAS_f,p_VEN_f,results) #calculates windkessel pressure @ t
+            p_SAS_f, p_VEN_f,p_SP_f,Vv_dot,Vs_dot,Q_AQ,Q_FM = self.coupled_3P_model(p_SAS_f,p_VEN_f,p_SP_f,results) #calculates windkessel pressure @ t
             self.update_windkessel_expr(p_SAS_f,p_VEN_f) # Update all terms dependent on the windkessel pressures
 
 
             results["p_SAS"] = p_SAS_f
             results["p_VEN"] = p_VEN_f
-            #if p_SP_f:
-            #    results["p_SP"] = p_SP_f
+            if p_SP_f in locals():
+                results["p_SP"] = p_SP_f
+
+            results["Q_AQ"] = Q_AQ
+            results["Q_FM"] = Q_FM
             results["Vv_dot"] = Vv_dot
             results["Vs_dot"] =  Vs_dot
-            results["t"] = t
+            results["t"] = self.t
 
             dV_PREV_SAS = results["dV_SAS"]
             dV_PREV_VEN = results["dV_VEN"]
@@ -403,7 +406,7 @@ class MPET:
             up_n.assign(up)
             progress += 1
 
-            t += self.dt
+            self.t += self.dt
          
         res = []
         res = split(up)
@@ -416,7 +419,7 @@ class MPET:
     def plotResults(self):
 
         plotDir = "%s/plots/" %self.filesave
-        plotCycle = 2 #Start plot after the second cycle
+        plotCycle = 5 #Start plot after the fifth cycle
         initPlot = int(self.numTsteps/self.T*plotCycle) 
 
         dV_fig, dV_ax = pylab.subplots(figsize=(12, 8))
@@ -514,8 +517,9 @@ class MPET:
 
         Q_SAS =  df["Q_SAS_N3"] 
         Q_VEN =  df["Q_VEN_N3"]
+        
 
-
+        
         # Plot outflow of CSF
         Qs_axs.plot(times[initPlot:-1], Q_SAS[initPlot:-1], markers[0], color="seagreen",label="$Q_{SAS}$")
 
@@ -534,6 +538,8 @@ class MPET:
         Qv_axs.grid(True)
         Qv_axs.legend()
         Qv_figs.savefig(plotDir + "brain-Q_ven.png")
+
+        
 
         BV = df["Q_SAS_N2"] + df["Q_VEN_N2"] 
         
@@ -572,8 +578,39 @@ class MPET:
         t_ax.legend()
         t_fig.savefig(plotDir + "brain-Ts.png")
     
-        
+
+        if "Q_AQ" in df.keys():
+
+            Qaq_figs, Qaq_axs  = pylab.subplots(figsize=(12, 8)) #Outflow CSF to SAS
+            Q_AQ = df["Q_AQ"]
+
+            Qfm_figs, Qfm_axs  = pylab.subplots(figsize=(12, 8)) #Outflow CSF to SAS
+
+
   
+            Qaq_axs.plot(times[initPlot:-1], Q_AQ[initPlot:-1], markers[0], color="darkmagenta",label="$Q_{AQ}$")
+            Qaq_axs.set_xlabel("time (s)")
+            Qaq_axs.set_xticks(x_ticks)
+            Qaq_axs.set_ylabel("Q (mm$^3$/s)")
+            Qaq_axs.grid(True)
+            Qaq_axs.legend()
+            Qaq_figs.savefig(plotDir + "brain-Q_aq.png")
+
+        if "Q_FM" in df.keys():
+
+            Qfm_figs, Qfm_axs  = pylab.subplots(figsize=(12, 8)) #Outflow CSF to SAS
+            Q_FM = df["Q_FM"]
+
+
+            Qfm_axs.plot(times[initPlot:-1], Q_FM[initPlot:-1], markers[0], color="darkmagenta",label="$Q_{FM}$")
+            Qfm_axs.set_xlabel("time (s)")
+            Qfm_axs.set_xticks(x_ticks)
+            Qfm_axs.set_ylabel("Q (mm$^3$/s)")
+            Qfm_axs.grid(True)
+            Qfm_axs.legend()
+            Qfm_figs.savefig(plotDir + "brain-Q_fm.png")
+
+
 
     def generate_diagnostics(self,*args):
         results = {}
@@ -715,50 +752,34 @@ class MPET:
         Q_VEN = results["Q_VEN_N3"]
         print("Q_VEN:",Q_VEN)
 
-        #Range to avoid instabilities
-        V_dotRange = 500
-        
-        #Volume change of ventricles
-        Vv_dot = 1/self.dt*(results["dV_VEN"]-results["dV_VEN_PREV"])
-        Vv_dot_WK = max([-V_dotRange, min([Vv_dot,V_dotRange])]) #Used in the WK model
+        #Scale to avoid instabilities
+        V_dotScale = 1/100
 
+        #Volume change of ventricles
+        Vv_dot = V_dotScale/self.dt*(results["dV_VEN"]-results["dV_VEN_PREV"])
+        
 
         #Volume change of SAS
-        Vs_dot = 1/self.dt*(results["dV_SAS"]-results["dV_SAS_PREV"])
+        Vs_dot = V_dotScale/self.dt*(results["dV_SAS"]-results["dV_SAS_PREV"])
 
-        Vs_dot_WK = max([-V_dotRange, min([Vs_dot,V_dotRange])]) #Used in the WK model
-        print("Volume change ventricles:",Vv_dot)
-        print("Volume change SAS",Vs_dot)
+        print("Rate of volume change, ventricles:",Vv_dot/V_dotScale)
+        print("Rate of volume change, SAS",Vs_dot/V_dotScale)
 
         #Conductance Aqueduct
         G_aq = np.pi*self.d**4/(128*self.L*self.mu_f[2]) #Poiseuille flow constant
       
-        Q_AQ = G_aq*(p_VEN - p_SAS)
+        Q_AQ = G_aq*(p_SAS - p_VEN)
         print("Q_AQ:",Q_AQ)
 
-        #ALT 1
+        
         """
-        dp_ven/dt = 1/C*dV_ven/dt
-        dp_sas/dt = 1/C(Q_SAS + G_aq(p_VEN - p_SAS))
-
-        b_SAS = p_SAS + self.dt/self.C_SAS * Q_SAS
-        b_VEN = p_VEN + self.dt/self.C_VEN *V_dot
-
-        A_11 = 1 + self.dt/self.C_SAS*G_aq
-        A_12 = -self.dt/self.C_SAS*G_aq
-        A_21 = 0
-        A_22 = 1
-        """
-
-        #ALT 2
-        """
-        dp_sas/dt = 1/C_sas(Vs_dot + Q_SAS + C_aq(p_VEN - p_SAS))
-        dp_ven/dt = 1/C_ven(Vv_dot + Q_VEn + C_aq(p_SAS - p_VEN))
+        dp_sas/dt = 1/C_sas(Vs_dot + Q_SAS + G_aq(p_VEN - p_SAS))
+        dp_ven/dt = 1/C_ven(Vv_dot + Q_VEN + G_aq(p_SAS - p_VEN))
         
         """
 
-        b_SAS = p_SAS + self.dt/self.C_SAS * (Q_SAS + Vs_dot_WK)
-        b_VEN = p_VEN + self.dt/self.C_VEN * (Q_VEN + Vv_dot_WK)
+        b_SAS = p_SAS + self.dt/self.C_SAS * (Q_SAS + Vs_dot)
+        b_VEN = p_VEN + self.dt/self.C_VEN * (Q_VEN + Vv_dot)
 
         A_11 = 1 + self.dt*G_aq/self.C_SAS
         A_12 = -self.dt*G_aq/self.C_SAS
@@ -771,7 +792,7 @@ class MPET:
 
         x = np.linalg.solve(A,b) #x_0 = p_SAS, x_1 = p_VEN
 
-        return x[0], x[1],Vv_dot,Vs_dot
+        return x[0], x[1],Vv_dot/V_dotScale,Vs_dot/V_dotScale,Q_AQ
 
     def coupled_3P_model(self,p_SAS,p_VEN,p_SP,results):
         """
@@ -782,7 +803,7 @@ class MPET:
         """
         #Assume only flow from ECS flow out to the CSF filled cavities
 
-        scale = 10**(0)
+        
         print("Pressure for SAS: ", p_SAS)
         print("Pressure for ventricles: ", p_VEN)
         print("Pressure in spinal-SAS:", p_SP)
@@ -795,36 +816,44 @@ class MPET:
         Q_VEN = results["Q_VEN_N3"]
         print("Q_VEN:",Q_VEN)
 
+        #To avoid instabilities
+        #if self.t < 3.0:
+        V_dotScale = 1/100
+        #else:
 
         #Volume change of ventricles
-        Vv_dot = 1/self.dt*(results["dV_VEN"]-results["dV_VEN_PREV"])
+        Vv_dot = V_dotScale/self.dt*(results["dV_VEN"]-results["dV_VEN_PREV"])
+        
         #Volume change of SAS
-        Vs_dot = 1/self.dt*(results["dV_SAS"]-results["dV_SAS_PREV"])
-
-        print("Volume change ventricles:",Vv_dot)
-        print("Volume change SAS",Vs_dot)
+        Vs_dot = V_dotScale/self.dt*(results["dV_SAS"]-results["dV_SAS_PREV"])
+        
+        
+        print("Volume change ventricles:",Vv_dot/V_dotScale)
+        print("Volume change SAS",Vs_dot/V_dotScale)
 
         #Conductance
         G_aq = np.pi*self.d**4/(128*self.L*self.mu_f[2]) #Poiseuille flow constant
         G_sas = G_aq*5 #From LM article
         G_fm = G_aq*10 #From LM article
-        Q_AQ = G_aq*(p_VEN - p_SAS)
-        Q_FM = G_aq*(p_VEN - p_SAS)
+
+        # "Positive" direction upwards, same as baledent article
+        Q_AQ = G_aq*(p_SAS - p_VEN)
+        Q_FM = G_fm*(p_SP - p_SAS)
 
         print("Q_AQ:",Q_AQ)
         print("Q_FM:",Q_FM)
+
         """
         Equations 
         dp_sas/dt = 1/C_sas(Vs_dot + Q_SAS + G_aq(p_VEN - p_SAS) + G_fm(p_SP-p_SAS)
         dp_ven/dt = 1/C_ven(Vv_dot + Q_VEn + G_aq(p_SAS - p_VEN))
         dp_sp/dt = 1/C_sp(G_fm(p_SAS-p_SP))
-        
         """
 
         b_SAS = p_SAS + self.dt/self.C_SAS * (Q_SAS + Vs_dot)
         b_VEN = p_VEN + self.dt/self.C_VEN * (Q_VEN + Vv_dot)
         b_SP = p_SP
-        A_11 = 1 + self.dt*G_aq/self.C_SAS
+        A_11 = 1 + self.dt*G_aq/self.C_SAS + self.dt*G_fm/self.C_SAS 
         A_12 = -self.dt*G_aq/self.C_SAS
         A_13 = -self.dt*G_fm/self.C_SAS
         A_21 = -self.dt*G_aq/self.C_VEN
@@ -838,9 +867,9 @@ class MPET:
         b = np.array([b_SAS, b_VEN, b_SP])
         A = np.array([[A_11, A_12, A_13],[A_21, A_22, A_23],[A_31, A_32, A_33]])
 
-        x = np.linalg.solve(A,b) #x_0 = p_SAS, x_1 = p_VEN
+        x = np.linalg.solve(A,b) #x_0 = p_SAS, x_1 = p_VEN, x_2 = p_SP
 
-        return x[0], x[1],x[2],Vv_dot,Vs_dot
+        return x[0], x[1],x[2],Vv_dot/V_dotScale,Vs_dot/V_dotScale,Q_AQ,Q_FM
 
     def coupled_4P_model(self,p_SAS,p_VEN,p_4VEN,p_SP,results):
         """

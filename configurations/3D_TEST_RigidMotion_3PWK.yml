@@ -2,13 +2,13 @@
 
 solver_settings:
   log_level : 20
-  T : 6.0
-  num_T_steps : 200
+  T : 9.0
+  num_T_steps : 300
   num_networks : 3
   num_boundaries : 2
   element_type : CG
   mesh_resolution : 5 
-  file_save : 3D_Test_RigidMotion_results
+  file_save : 3D_Test_RigidMotion_3PWK_results
   uNullspace : True
 
 material_parameters:
@@ -32,9 +32,9 @@ material_parameters:
     - 2.67e-3 #Viscosity fluid 2, Pa*s
     - 6.97e-4 #Viscosity fluid 3, Pa*s
   p_initial :
-    - 60.0 #Initial pressure network 1
-    - 60.0 #Initial pressure network 2
-    - 100.0 #Initial pressure network 3
+    - 100 #Initial pressure network 1
+    - 100 #Initial pressure network 2
+    - 80 #Initial pressure network 3
   gamma :
     - 0 #1/(Pa*s) Transfer network: 1-1
     - 1.0e-3 #1/(Pa*s) Transfer network: 1-2
@@ -48,14 +48,14 @@ material_parameters:
 
 
 boundary_parameters:
-  Compliance_sas : 4 # [mm³/Pa]
-  Compliance_ven : 4 # [mm³/Pa]
-  Compliance_spine : 100 # [mm³/Pa]
+  Compliance_sas : 2 # [volume/Pa] arbitrary unit
+  Compliance_ven : 4 # [volume/Pa] arbitrary unit
+  Compliance_spine : 20 # [volume/Pa] arbitrary unit
   beta_sas : 1.0e-3 
   beta_ven : 1.0e-3
-  p_sas_initial : 100
-  p_ven_initial : 100
-  p_spine_initial : 120
+  p_sas_initial : 30
+  p_ven_initial : 30
+  p_spine_initial : 30
   #ScalePressure : 133 #mmHg to Pa
   p_vein : 0.0 # Back pressure, vein network
   #for alt model, remember that mesh is in mm
