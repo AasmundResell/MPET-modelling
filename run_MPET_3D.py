@@ -3,13 +3,11 @@ print(os.environ['PATH'])
 import sys
 print(sys.executable)
 from ufl import FacetNormal, as_vector
-from mshr import Sphere,Box, generate_mesh
 from dolfin import *
 import yaml
 import matplotlib.pyplot as plt
-
 from MPET import MPET
-
+from meshes.read_brain_mesh_3D import read_brain_mesh_3D, create_sphere_mesh
 
 class BoundaryOuter(SubDomain):
     def inside(self, x, on_boundary):
@@ -30,27 +28,39 @@ def run_MPET_3D_TestSphere():
     sourceParameters = parsedValues['source_data']
     boundaryParameters = parsedValues['boundary_parameters']
 
+    meshN = settings["mesh_resolution"]
+
+
     mesh = Mesh("meshes/sphere_mesh/sphere_hollow.xml")
-    
-    info(mesh)
-    #plot(mesh, "3D mesh")
-    
-    #plt.show()
-    
-    n = FacetNormal(mesh)  # normal vector on the boundary
-    
+    facet_f = MeshFunction("size_t", mesh, 2)
 
-    # Define boundary
-    boundary_markers = MeshFunction("size_t", mesh, 2)
-    #boundary_markers.set_all(9999)
-    
     bx0 = BoundaryOuter()
-    bx0.mark(boundary_markers, 1)  # Applies for all boundaries
+    bx0.mark(facet_f,1)
     bx1 = BoundaryInner()
-    bx1.mark(boundary_markers, 2)  # Overwrites the inner ventricles boundary
+    bx1.mark(facet_f,2)
 
-    File('bnd.pvd')<<boundary_markers
+    """
+    #create_sphere_mesh(meshN) #DONT Call unless mesh size is wrong
 
+    path = "/home/asmund/dev/MPET-modelling/sphere.h5"
+    mesh = Mesh()
+    hdf = HDF5File(mesh.mpi_comm(),path, "r")
+    hdf.read(mesh, "/mesh", False)
+
+    facet_f = MeshFunction("size_t", mesh,mesh.topology().dim()-1)
+
+    hdf.read(facet_f, "/facet")
+
+    File('bnd.pvd')<<facet_f
+
+    #plot(mesh, "3D mesh")
+    #plt.show()
+    """
+
+    info(mesh)
+    info(facet_f)
+
+    #n = FacetNormal(mesh)  # normal vector on the boundary
     U,pVentricles,pSkull = generateUFL_BCexpressions()
     beta_VEN = boundaryParameters["beta_ven"]
     beta_SAS = boundaryParameters["beta_sas"]
@@ -70,15 +80,14 @@ def run_MPET_3D_TestSphere():
         (1, 1): {"Neumann": 0}, 
         (1, 2): {"Neumann": 0},
         (2, 1): {"Dirichlet": Constant(p_BP)},
-        (2, 2): {"Dirichlet": Constant(p_BP)}, #Better to not cause assymteric pressure distribution?
+        (2, 2): {"Dirichlet": Constant(p_BP)},
         (3, 1): {"RobinWK": (beta_SAS,pSkull)},
         (3, 2): {"RobinWK": (beta_VEN,pVentricles)},
     }
 
-
     Solver3D = MPET(
         mesh,
-        boundary_markers,
+        facet_f,
         boundary_conditionsU,
         boundary_conditionsP,
         **settings,
@@ -92,7 +101,7 @@ def run_MPET_3D_TestSphere():
     Solver3D.solve()
 
     Solver3D.plotResults()
- 
+
  
 def generateUFL_BCexpressions():
     import sympy as sym
@@ -128,34 +137,7 @@ def generateUFL_BCexpressions():
     return U_UFL,pSkull_UFL, pVentricles_UFL
 
 
+
+
 if __name__ == "__main__":
     run_MPET_3D_TestSphere()
-    """
-    origin = Point(0.0, 0.0, 0.0)
-
-    meshN = settings["mesh_resolution"]
-
-
-
-    r1 = 100  # Outer radius (mm)
-    r2 = 30  # Inner radius  (mm)
-
-    parenchyma = Sphere(origin, r1)
-    ventricles = Sphere(origin, r2)
-    channel = Box(Point(0.0, -50.0, -50.0),Point(100, 50.0, 50.0))
-
-    import numpy as np
-
-    g3d = parenchyma - ventricles #- channel
-
-    # Test printing
-    info("\nCompact output of 3D geometry:")
-    info(g3d)
-    info("\nVerbose output of 3D geometry:")
-    info(g3d, True)
-
-
-    mesh = generate_mesh(g3d, meshN)
-    info(mesh)
-    plot(mesh, "3D mesh")
-    """
