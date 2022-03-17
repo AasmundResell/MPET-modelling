@@ -260,7 +260,7 @@ class MPET:
             return (1 / self.dt)*(d_p + d_eps) * q[numP + 2] * dx
                 
         def F(f, v):
-            return self.RampSource*dot(f, v) * dx(self.mesh)
+            return dot(f, v) * dx(self.mesh)
 
         
         #Apply terms for each fluid network
@@ -384,6 +384,8 @@ class MPET:
             #For calculating volume change in Windkessel model
             results["dV_SAS_PREV"] = dV_PREV_SAS
             results["dV_VEN_PREV"] = dV_PREV_VEN
+
+            results["total_inflow"] = float(self.m)
             
             #p_SAS_f, p_VEN_f,Vv_dot,Vs_dot,Q_AQ = self.coupled_2P_model(p_SAS_f,p_VEN_f,results) #calculates windkessel pressure @ t
             p_SAS_f, p_VEN_f,p_SP_f,Vv_dot,Vs_dot,Q_AQ,Q_FM = self.coupled_3P_model(p_SAS_f,p_VEN_f,p_SP_f,results) #calculates windkessel pressure @ t
@@ -405,6 +407,7 @@ class MPET:
 
             pickle.dump(results, open("%s/data_set/qois_%d.pickle" % (self.filesave, i), "wb"))
             
+
             up_n.assign(up)
             progress += 1
 
@@ -428,6 +431,7 @@ class MPET:
         dV_dot_fig, dV_dot_ax = pylab.subplots(figsize=(12, 8))
         PW_figs, PW_axs  = pylab.subplots(figsize=(12, 8)) #Pressure Windkessel
         BV_figs, BV_axs  = pylab.subplots(figsize=(12, 8)) #Outflow venous blood
+        ABP_figs,ABP_axs  = pylab.subplots(figsize=(12, 8)) #Outflow venous blood
         Qv_figs, Qv_axs  = pylab.subplots(figsize=(12, 8)) #Outflow CSF to ventricles
         Qs_figs, Qs_axs  = pylab.subplots(figsize=(12, 8)) #Outflow CSF to SAS
         pmax_figs, pmax_axs = pylab.subplots(figsize=(12, 8))
@@ -441,9 +445,9 @@ class MPET:
         markers = [".-", ".-", ".-"]
 
         x_ticks = [plotCycle + 0.5*i for i in range(int(self.T/0.5)+1-plotCycle*2)]
-
+        
         print("x_ticks:",x_ticks)
-
+        
         df = self.load_data()
         names = df.columns
         times = (df["t"].to_numpy())
@@ -1037,6 +1041,7 @@ class MPET:
             elif isinstance(expr, tuple):
                 if isinstance(expr[0], dolfin.cpp.adaptivity.TimeSeries):
                     expr[0].retrieve(expr[1].vector(), t,interpolate=False)
+                    self.m = assemble(expr[1]*dx)
                 else:
                     self.operand_update(expr, t)
                     
