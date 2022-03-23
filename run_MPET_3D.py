@@ -21,7 +21,7 @@ class BoundaryInner(SubDomain):
 
 def run_MPET_3D_TestSphere():
 
-    ymlFile = open("configurations/3D_TEST_RigidMotion_3PWK.yml") 
+    ymlFile = open("configurations/3D_TEST_RigidMotion_3PWK_RaisedCVP.yml") 
     parsedValues = yaml.load(ymlFile, Loader=yaml.FullLoader)
     materialParameters = parsedValues['material_parameters']
     settings = parsedValues['solver_settings']
@@ -55,12 +55,12 @@ def run_MPET_3D_TestSphere():
 
     #plot(mesh, "3D mesh")
     #plt.show()
-    """
 
     info(mesh)
     info(facet_f)
 
-    #n = FacetNormal(mesh)  # normal vector on the boundary
+    """
+
     U,pVentricles,pSkull = generateUFL_BCexpressions()
     beta_VEN = boundaryParameters["beta_ven"]
     beta_SAS = boundaryParameters["beta_sas"]
@@ -80,7 +80,7 @@ def run_MPET_3D_TestSphere():
         (1, 1): {"Neumann": 0}, 
         (1, 2): {"Neumann": 0},
         (2, 1): {"Dirichlet": Constant(p_BP)},
-        (2, 2): {"Dirichlet": Constant(p_BP)},
+        (2, 2): {"Neumann": 0},
         (3, 1): {"RobinWK": (beta_SAS,pSkull)},
         (3, 2): {"RobinWK": (beta_VEN,pVentricles)},
     }
@@ -96,11 +96,13 @@ def run_MPET_3D_TestSphere():
         **boundaryParameters,
     )
     
-    Solver3D.printSetup()
+    #Solver3D.printSetup()
 
-    Solver3D.solve()
+    #Solver3D.solve()
 
-    Solver3D.plotResults()
+    plot_after = 20
+
+    Solver3D.plotResults(plot_after)
 
  
 def generateUFL_BCexpressions():

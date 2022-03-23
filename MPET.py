@@ -421,10 +421,9 @@ class MPET:
         self.u_sol = u
         self.p_sol = p
 
-    def plotResults(self):
+    def plotResults(self,plotCycle = 0.0):
 
         plotDir = "%s/plots/" %self.filesave
-        plotCycle = 10 #Start plot after the fifth cycle
         initPlot = int(self.numTsteps/self.T*plotCycle) 
 
         V_fig, V_ax = pylab.subplots(figsize=(12, 8))
@@ -597,7 +596,7 @@ class MPET:
             Qaq_axs.plot(times[initPlot:-1], Q_AQ[initPlot:-1], markers[0], color="darkmagenta",label="$Q_{AQ}$")
             Qaq_axs.set_xlabel("time (s)")
             Qaq_axs.set_xticks(x_ticks)
-            Qaq_axs.set_ylabel("Q (mm$^3$/s)")
+            Qaq_axs.set_ylabel("Q (mL/s)")
             Qaq_axs.grid(True)
             Qaq_axs.legend()
             Qaq_figs.savefig(plotDir + "brain-Q_aq.png")
@@ -611,7 +610,7 @@ class MPET:
             Qfm_axs.plot(times[initPlot:-1], Q_FM[initPlot:-1], markers[0], color="darkmagenta",label="$Q_{FM}$")
             Qfm_axs.set_xlabel("time (s)")
             Qfm_axs.set_xticks(x_ticks)
-            Qfm_axs.set_ylabel("Q (mm$^3$/s)")
+            Qfm_axs.set_ylabel("Q (mL/s)")
             Qfm_axs.grid(True)
             Qfm_axs.legend()
             Qfm_figs.savefig(plotDir + "brain-Q_fm.png")
@@ -766,28 +765,22 @@ class MPET:
         dp_sp/dt = 1/C_sp(G_fm(p_SAS-p_SP))
         
         """
-        
-        #To avoid instabilities
 
-        if self.t < 1.0:
-            VolScale = 1/100000 #mm³ to mL
-        else:
-            VolScale = 1/100000 #mm³ to mm³
+        VolScale = 1/1000 #mm³ to mL   
 
-        VolScale = 1/(100000)# - 90000*self.t/5)
         #P_SAS is determined from Windkessel parameters
         Q_SAS = results["Q_SAS_N3"]
-        print("Q_SAS[mm³] :",Q_SAS*VolScale)
+        print("Q_SAS[mm³] :",Q_SAS)
 
         #P_VEN is determined from volume change of the ventricles
         Q_VEN = results["Q_VEN_N3"]
-        print("Q_VEN[mm³] :",Q_VEN*VolScale)
+        print("Q_VEN[mm³] :",Q_VEN)
 
         #Volume change of ventricles
-        Vv_dot = VolScale/self.dt*(results["dV_VEN"]-results["dV_VEN_PREV"])
+        Vv_dot = 1/self.dt*(results["dV_VEN"]-results["dV_VEN_PREV"])
         
         #Volume change of SAS
-        Vs_dot = VolScale/self.dt*(results["dV_SAS"]-results["dV_SAS_PREV"])
+        Vs_dot = 1/self.dt*(results["dV_SAS"]-results["dV_SAS_PREV"])
         
         
         print("Volume change ventricles[mm³] :",Vv_dot)
@@ -801,12 +794,12 @@ class MPET:
         Q_AQ = G_aq*(p_SAS - p_VEN)
         Q_FM = G_fm*(p_SP - p_SAS)
 
-        print("Q_AQ[mm³]:",Q_AQ)
-        print("Q_FM[mm³]:",Q_FM)
+        print("Q_AQ[mL]:",Q_AQ)
+        print("Q_FM[mL]:",Q_FM)
 
 
-        b_SAS = p_SAS + self.dt/self.C_SAS * (Q_SAS * VolScale + Vs_dot)
-        b_VEN = p_VEN + self.dt/self.C_VEN * (Q_VEN * VolScale + Vv_dot)
+        b_SAS = p_SAS + self.dt/self.C_SAS * (Q_SAS  + Vs_dot)* VolScale
+        b_VEN = p_VEN + self.dt/self.C_VEN * (Q_VEN + Vv_dot)  * VolScale
         b_SP = p_SP
         A_11 = 1 + self.dt*G_aq/self.C_SAS + self.dt*G_fm/self.C_SAS 
         A_12 = -self.dt*G_aq/self.C_SAS
@@ -827,7 +820,7 @@ class MPET:
         print("Pressure for ventricles: ", x[1])
         print("Pressure in spinal-SAS:", x[2])
 
-        return x[0], x[1],x[2],Vv_dot/VolScale,Vs_dot/VolScale,Q_AQ/VolScale,Q_FM/VolScale
+        return x[0], x[1],x[2],Vv_dot,Vs_dot,Q_AQ,Q_FM
 
 
     def applyPressureBC(self,W,p_,q):
