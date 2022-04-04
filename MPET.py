@@ -59,6 +59,9 @@ class MPET:
             path.mkdir(parents=True,exist_ok=True)
             path = Path("/home/asmund/dev/MPET-modelling/%s/FEM_results/" %self.filesave)
             path.mkdir(parents=True,exist_ok=True)
+
+        self.plot_from = kwargs.get("plot_from")
+        self.plot_to = kwargs.get("plot_to")
     
         self.numPnetworks = kwargs.get("num_networks") 
         self.T = kwargs.get("T")
@@ -388,7 +391,10 @@ class MPET:
             results["total_inflow"] = float(self.m)
             
             #p_SAS_f, p_VEN_f,Vv_dot,Vs_dot,Q_AQ = self.coupled_2P_model(p_SAS_f,p_VEN_f,results) #calculates windkessel pressure @ t
-            p_SAS_f, p_VEN_f,p_SP_f,Vv_dot,Vs_dot,Q_AQ,Q_FM = self.coupled_3P_model(p_SAS_f,p_VEN_f,p_SP_f,results) #calculates windkessel pressure @ t
+            #p_SAS_f, p_VEN_f,p_SP_f,Vv_dot,Vs_dot,Q_AQ,Q_FM = self.coupled_3P_model(p_SAS_f,p_VEN_f,p_SP_f,results) #calculates windkessel pressure @ t
+            p_SAS_f, p_VEN_f,p_SP_f,Vv_dot,Vs_dot,Q_AQ,Q_FM = self.coupled_3P_nonlinear_model(p_SAS_f,p_VEN_f,p_SP_f,results) #calculates windkessel pressure @ t
+            
+
             self.update_windkessel_expr(p_SAS_f,p_VEN_f) # Update all terms dependent on the windkessel pressures
 
 
@@ -421,10 +427,19 @@ class MPET:
         self.u_sol = u
         self.p_sol = p
 
-    def plotResults(self,plotCycle = 0.0):
+    def plotResults(self,plotCycle = 0):
 
         plotDir = "%s/plots/" %self.filesave
-        initPlot = int(self.numTsteps/self.T*plotCycle) 
+        initPlot = int(self.numTsteps/self.T*self.plot_from)
+        endPlot = int(self.numTsteps/self.T*self.plot_to)
+        print("Init from: ",initPlot)
+        print("End at: ",endPlot)
+
+        self.plot_from = int(self.plot_from)
+        self.plot_to = int(self.plot_to)
+
+        print("Plot from: ",self.plot_from)
+        print("Plot to: ",self.plot_to)
 
         V_fig, V_ax = pylab.subplots(figsize=(12, 8))
         dV_dot_fig, dV_dot_ax = pylab.subplots(figsize=(12, 8))
@@ -443,7 +458,7 @@ class MPET:
         colors = ["crimson", "navy", "cornflowerblue"]
         markers = [".-", ".-", ".-"]
 
-        x_ticks = [plotCycle + 0.5*i for i in range(int(self.T/0.5)+1-plotCycle*2)]
+        x_ticks = [self.plot_from + int(0.5*i) for i in range(int(self.plot_to/0.5)+1-self.plot_from*2)]
         
         print("x_ticks:",x_ticks)
         
@@ -451,9 +466,9 @@ class MPET:
         names = df.columns
         times = (df["t"].to_numpy())
          # Plot volume vs time
-        V_ax.plot(times[initPlot:-1], df["dV"][initPlot:-1], markers[0], color="seagreen",label="div(u)dx")
-        V_ax.plot(times[initPlot:-1], df["dV_SAS"][initPlot:-1], markers[1], color="darkmagenta",label="(u * n)ds_{SAS}")
-        V_ax.plot(times[initPlot:-1], df["dV_VEN"][initPlot:-1], markers[2], color="royalblue",label="(u * n)ds_{VEN}")
+        V_ax.plot(times[initPlot:endPlot], df["dV"][initPlot:endPlot], markers[0], color="seagreen",label="div(u)dx")
+        V_ax.plot(times[initPlot:endPlot], df["dV_SAS"][initPlot:endPlot], markers[1], color="darkmagenta",label="(u * n)ds_{SAS}")
+        V_ax.plot(times[initPlot:endPlot], df["dV_VEN"][initPlot:endPlot], markers[2], color="royalblue",label="(u * n)ds_{VEN}")
         V_ax.set_xlabel("time (s)")
         V_ax.set_xticks(x_ticks)
         V_ax.set_ylabel("V (mm$^3$)")
@@ -462,8 +477,8 @@ class MPET:
         V_fig.savefig(plotDir + "brain-Vol.png")
 
         # Plot volume derivative
-        dV_dot_ax.plot(times[initPlot:-1], df["Vv_dot"][initPlot:-1], markers[0], color="seagreen",label="$dV_{VEN}$/dt")
-        dV_dot_ax.plot(times[initPlot:-1], df["Vs_dot"][initPlot:-1], markers[0], color="darkmagenta",label="$dV_{SAS}$/dt")
+        dV_dot_ax.plot(times[initPlot:endPlot], df["Vv_dot"][initPlot:endPlot], markers[0], color="seagreen",label="$dV_{VEN}$/dt")
+        dV_dot_ax.plot(times[initPlot:endPlot], df["Vs_dot"][initPlot:endPlot], markers[0], color="darkmagenta",label="$dV_{SAS}$/dt")
         
         dV_dot_ax.set_xlabel("time (s)")
         dV_dot_ax.set_xticks(x_ticks)
@@ -475,7 +490,7 @@ class MPET:
         
         # Plot max/min of the pressures
         for i in range(1,self.numPnetworks+1):
-            pmax_axs.plot(times[initPlot:-1], df["max_p_%d" % i][initPlot:-1], markers[0],
+            pmax_axs.plot(times[initPlot:endPlot], df["max_p_%d" % i][initPlot:endPlot], markers[0],
                        color=colors[i-1], label="$p_%d$" % i,)
 
             pmax_axs.set_xlabel("time (s)")
@@ -484,7 +499,7 @@ class MPET:
             pmax_axs.grid(True)
             pmax_axs.legend()
 
-            pmin_axs.plot(times[initPlot:-1], df["min_p_%d" % i][initPlot:-1], markers[0],
+            pmin_axs.plot(times[initPlot:endPlot], df["min_p_%d" % i][initPlot:endPlot], markers[0],
                        color=colors[i-1], label="$p_%d$" % i,)
 
             pmin_axs.set_xlabel("time (s)")
@@ -493,7 +508,7 @@ class MPET:
             pmin_axs.grid(True)
             pmin_axs.legend()
 
-            pmean_axs.plot(times[initPlot:-1], df["mean_p_%d" % i][initPlot:-1], markers[0],
+            pmean_axs.plot(times[initPlot:endPlot], df["mean_p_%d" % i][initPlot:endPlot], markers[0],
                        color=colors[i-1], label="$p_%d$" % i,)
 
             pmean_axs.set_xlabel("time (s)")
@@ -510,7 +525,7 @@ class MPET:
         
         # Plot average compartment velocity (avg v_i)
         for i in range(1,self.numPnetworks+1):
-                v_ax.plot(times[initPlot:-1], df["v%d_avg" % i][initPlot:-1], markers[0], color=colors[i-1],
+                v_ax.plot(times[initPlot:endPlot], df["v%d_avg" % i][initPlot:endPlot], markers[0], color=colors[i-1],
                           label="$v_%d$" % i)
         v_ax.set_xlabel("time (s)")
         v_ax.set_xticks(x_ticks)
@@ -526,7 +541,7 @@ class MPET:
 
         
         # Plot outflow of CSF
-        Qs_axs.plot(times[initPlot:-1], Q_SAS[initPlot:-1], markers[0], color="seagreen",label="$Q_{SAS}$")
+        Qs_axs.plot(times[initPlot:endPlot], Q_SAS[initPlot:endPlot], markers[0], color="seagreen",label="$Q_{SAS}$")
 
         Qs_axs.set_xlabel("time (s)")
         Qs_axs.set_xticks(x_ticks)
@@ -536,7 +551,7 @@ class MPET:
         Qs_figs.savefig(plotDir + "brain-Q_sas.png")
 
 
-        Qv_axs.plot(times[initPlot:-1], Q_VEN[initPlot:-1], markers[0], color="darkmagenta",label="$Q_{VEN}$")
+        Qv_axs.plot(times[initPlot:endPlot], Q_VEN[initPlot:endPlot], markers[0], color="darkmagenta",label="$Q_{VEN}$")
         Qv_axs.set_xlabel("time (s)")
         Qv_axs.set_xticks(x_ticks)
         Qv_axs.set_ylabel("Q (mm$^3$/s)")
@@ -549,7 +564,7 @@ class MPET:
         BV = df["Q_SAS_N2"] + df["Q_VEN_N2"] 
         
         # Plot outflow of venous blood
-        BV_axs.plot(times[initPlot:-1], BV[initPlot:-1], markers[0], color="seagreen")
+        BV_axs.plot(times[initPlot:endPlot], BV[initPlot:endPlot], markers[0], color="seagreen")
         BV_axs.set_xlabel("time (s)")
         BV_axs.set_xticks(x_ticks)
         BV_axs.set_ylabel("Venous outflow (mm$^3$/s)")
@@ -558,11 +573,11 @@ class MPET:
 
 
         # Plot Windkessel pressure
-        PW_axs.plot(times[initPlot:-1], df["p_SAS"][initPlot:-1], markers[0], color="seagreen",label="$p_{SAS}$")
-        PW_axs.plot(times[initPlot:-1], df["p_VEN"][initPlot:-1], markers[1], color="darkmagenta",label="$p_{VEN}$")
+        PW_axs.plot(times[initPlot:endPlot], df["p_SAS"][initPlot:endPlot], markers[0], color="seagreen",label="$p_{SAS}$")
+        PW_axs.plot(times[initPlot:endPlot], df["p_VEN"][initPlot:endPlot], markers[1], color="darkmagenta",label="$p_{VEN}$")
 
         if "p_SP" in df.keys():
-            PW_axs.plot(times[initPlot:-1], df["p_SP"][initPlot:-1], markers[1], color="cornflowerblue",label="$p_{SP}$")
+            PW_axs.plot(times[initPlot:endPlot], df["p_SP"][initPlot:endPlot], markers[1], color="cornflowerblue",label="$p_{SP}$")
 
 
         PW_axs.set_xlabel("time (s)")
@@ -574,8 +589,8 @@ class MPET:
 
 
         # Plot transfer rates (avg v_i)
-        t_ax.plot(times[initPlot:-1], df["T12"][initPlot:-1], markers[0], color="darkmagenta", label="$T_{12}$")
-        t_ax.plot(times[initPlot:-1], df["T13"][initPlot:-1], markers[0], color="royalblue", label="$T_{13}$")
+        t_ax.plot(times[initPlot:endPlot], df["T12"][initPlot:endPlot], markers[0], color="darkmagenta", label="$T_{12}$")
+        t_ax.plot(times[initPlot:endPlot], df["T13"][initPlot:endPlot], markers[0], color="royalblue", label="$T_{13}$")
         t_ax.set_xlabel("time (s)")
         t_ax.set_xticks(x_ticks)
         t_ax.set_ylabel("Transfer rate ($L^2$-norm)")
@@ -593,7 +608,7 @@ class MPET:
 
 
   
-            Qaq_axs.plot(times[initPlot:-1], Q_AQ[initPlot:-1], markers[0], color="darkmagenta",label="$Q_{AQ}$")
+            Qaq_axs.plot(times[initPlot:endPlot], Q_AQ[initPlot:endPlot], markers[0], color="darkmagenta",label="$Q_{AQ}$")
             Qaq_axs.set_xlabel("time (s)")
             Qaq_axs.set_xticks(x_ticks)
             Qaq_axs.set_ylabel("Q (mL/s)")
@@ -607,7 +622,7 @@ class MPET:
             Q_FM = df["Q_FM"]
 
 
-            Qfm_axs.plot(times[initPlot:-1], Q_FM[initPlot:-1], markers[0], color="darkmagenta",label="$Q_{FM}$")
+            Qfm_axs.plot(times[initPlot:endPlot], Q_FM[initPlot:endPlot], markers[0], color="darkmagenta",label="$Q_{FM}$")
             Qfm_axs.set_xlabel("time (s)")
             Qfm_axs.set_xticks(x_ticks)
             Qfm_axs.set_ylabel("Q (mL/s)")
@@ -753,6 +768,7 @@ class MPET:
 
         return x[0], x[1],Vv_dot/V_dotScale,Vs_dot/V_dotScale,Q_AQ
 
+
     def coupled_3P_model(self,p_SAS,p_VEN,p_SP,results):
         """
         This model calculates a 3-pressure lumped model for the SAS, ventricles and spinal-SAS compartments
@@ -766,7 +782,11 @@ class MPET:
         
         """
 
-        VolScale = 1/1000 #mm³ to mL   
+        #if (self.t < 8.0):
+        #    VolScale = 1/10000 #mm³ to mL   
+        #else:
+        VolScale = 1/1000 #mm³ to mL
+
 
         #P_SAS is determined from Windkessel parameters
         Q_SAS = results["Q_SAS_N3"]
@@ -821,6 +841,84 @@ class MPET:
         print("Pressure in spinal-SAS:", x[2])
 
         return x[0], x[1],x[2],Vv_dot,Vs_dot,Q_AQ,Q_FM
+
+    def coupled_3P_nonlinear_model(self,p_SAS,p_VEN,p_SP,results):
+        """
+        This model calculates a 3-pressure lumped model for the SAS, ventricles and spinal-SAS compartments
+
+        Solves using explicit (forward) Euler
+
+        Equations:
+        dp_sas/dt = 1/C_sas(Vs_dot + Q_SAS + G_aq(p_VEN - p_SAS) + G_fm(p_SP-p_SAS)
+        dp_ven/dt = 1/C_ven(Vv_dot + Q_VEN + G_aq(p_SAS - p_VEN))
+        dp_sp/dt = 1/C_sp(G_fm(p_SAS-p_SP))
+        
+        """
+
+        if (self.t < 8.0):
+            VolScale = 1/1000 #mm³ to mL   
+        else:
+            VolScale = 1/1000 #mm³ to mL
+
+
+        #P_SAS is determined from Windkessel parameters
+        Q_SAS = results["Q_SAS_N3"]
+        print("Q_SAS[mm³] :",Q_SAS)
+
+        #P_VEN is determined from volume change of the ventricles
+        Q_VEN = results["Q_VEN_N3"]
+        print("Q_VEN[mm³] :",Q_VEN)
+
+        #Volume change of ventricles
+        Vv_dot = 1/self.dt*(results["dV_VEN"]-results["dV_VEN_PREV"])
+        
+        #Volume change of SAS
+        Vs_dot = 1/self.dt*(results["dV_SAS"]-results["dV_SAS_PREV"])
+        
+        
+        print("Vv_dot[mm³] :",Vv_dot)
+        print("Vs_dot[mm³] :",Vs_dot)
+
+        #Conductance
+        G_aq = 5/133 #mL/mmHg to mL/Pa, from Ambarki2007
+        G_fm = G_aq*10 #from Ambarki2007
+
+        # "Positive" direction upwards, same as baledent article
+        Q_AQ = G_aq*(p_SAS - p_VEN)
+        Q_FM = G_fm*(p_SP - p_SAS)
+
+        print("Q_AQ[mL]:",Q_AQ)
+        print("Q_FM[mL]:",Q_FM)
+
+        E_1 = 0.4#[1/mL]
+        E_2 = 0.1
+
+
+        p_r = 0.0 #referance pressure, mmHg
+        
+        C_SAS = 1/(E_1*(p_SP-p_r))
+        C_VEN = 1/(E_1*(p_VEN-p_r))
+        C_SP = 1/(E_2*(p_SP-p_r))
+
+        print("C_SAS/C_VEN:",C_SAS)
+        print("C_SP:",C_SP)
+
+        
+        p_SAS_nn = p_SAS + self.dt/C_SAS * ((Q_SAS  + Vs_dot)* VolScale -Q_AQ + Q_FM)
+        p_VEN_nn = p_VEN + self.dt/C_VEN * ((Q_VEN + Vv_dot)  * VolScale + Q_AQ)
+        p_SP_nn = p_SP + self.dt/C_SP*(-Q_FM)
+
+        x = np.array([p_SAS_nn,p_VEN_nn,p_SP_nn])
+        
+        print("Pressure for SAS: ", x[0])
+        print("Pressure for ventricles: ", x[1])
+        print("Pressure in spinal-SAS:", x[2])
+
+        return x[0], x[1],x[2],Vv_dot,Vs_dot,Q_AQ,Q_FM
+
+
+
+
 
 
     def applyPressureBC(self,W,p_,q):
