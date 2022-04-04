@@ -391,8 +391,8 @@ class MPET:
             results["total_inflow"] = float(self.m)
             
             #p_SAS_f, p_VEN_f,Vv_dot,Vs_dot,Q_AQ = self.coupled_2P_model(p_SAS_f,p_VEN_f,results) #calculates windkessel pressure @ t
-            #p_SAS_f, p_VEN_f,p_SP_f,Vv_dot,Vs_dot,Q_AQ,Q_FM = self.coupled_3P_model(p_SAS_f,p_VEN_f,p_SP_f,results) #calculates windkessel pressure @ t
-            p_SAS_f, p_VEN_f,p_SP_f,Vv_dot,Vs_dot,Q_AQ,Q_FM = self.coupled_3P_nonlinear_model(p_SAS_f,p_VEN_f,p_SP_f,results) #calculates windkessel pressure @ t
+            p_SAS_f, p_VEN_f,p_SP_f,Vv_dot,Vs_dot,Q_AQ,Q_FM = self.coupled_3P_model(p_SAS_f,p_VEN_f,p_SP_f,results) #calculates windkessel pressure @ t
+            #p_SAS_f, p_VEN_f,p_SP_f,Vv_dot,Vs_dot,Q_AQ,Q_FM = self.coupled_3P_nonlinear_model(p_SAS_f,p_VEN_f,p_SP_f,results) #calculates windkessel pressure @ t
             
 
             self.update_windkessel_expr(p_SAS_f,p_VEN_f) # Update all terms dependent on the windkessel pressures
@@ -582,7 +582,7 @@ class MPET:
 
         PW_axs.set_xlabel("time (s)")
         PW_axs.set_xticks(x_ticks)
-        PW_axs.set_ylabel("P ($mmHg$)")
+        PW_axs.set_ylabel("P ($Pa$)")
         PW_axs.grid(True)
         PW_axs.legend()
         PW_figs.savefig(plotDir + "brain-WK.png")
@@ -647,12 +647,13 @@ class MPET:
         V = VectorFunctionSpace(self.mesh, "DG", 0)
 
         # Pressures
+        Vol = assemble(1*dx(self.mesh))
+        A = np.sqrt(Vol)
         for (i, p) in enumerate(p_list):
             results["max_p_%d" % (i)] = max(p.vector())
             results["min_p_%d" % (i)] = min(p.vector())
-            results["mean_p_%d" % (i)] = np.mean(p.vector())
+            results["mean_p_%d" % (i)] = assemble(p*dx)/Vol
             
-            A = np.sqrt(assemble(1*dx(self.mesh)))
             if i > 0: # Darcy velocities
                 v = project(self.K[i-1]*grad(p), V)
                 v_avg = norm(v, "L2")/A
@@ -782,10 +783,10 @@ class MPET:
         
         """
 
-        #if (self.t < 8.0):
-        #    VolScale = 1/10000 #mm³ to mL   
-        #else:
-        VolScale = 1/1000 #mm³ to mL
+        if (self.t < 4.0):
+            VolScale = 1/10000 #mm³ to mL   
+        else:
+            VolScale = 1/1000 #mm³ to mL
 
 
         #P_SAS is determined from Windkessel parameters
@@ -807,7 +808,9 @@ class MPET:
         print("Volume change SAS[mm³] :",Vs_dot)
 
         #Conductance
-        G_aq = 5/133 #mL/mmHg to mL/Pa, from Ambarki2007
+        G_aq = np.pi*self.d**4/(128*self.L*self.mu_f[2]) #Poiseuille flow constant
+        #G_aq = 5/133 #mL/mmHg to mL/Pa, from Ambarki2007
+        G_aq = G_aq*1/1000 #mm³/Pa to mL/Pa
         G_fm = G_aq*10 #from Ambarki2007
 
         # "Positive" direction upwards, same as baledent article
@@ -855,13 +858,13 @@ class MPET:
         
         """
 
-        if (self.t < 8.0):
-            VolScale = 1/1000 #mm³ to mL   
+        if (self.t < 4.0):
+            VolScale = 1/10000 #mm³ to mL   
         else:
             VolScale = 1/1000 #mm³ to mL
 
 
-        #P_SAS is determined from Windkessel parameters
+            #P_SAS is determined from Windkessel parameters
         Q_SAS = results["Q_SAS_N3"]
         print("Q_SAS[mm³] :",Q_SAS)
 
@@ -890,8 +893,8 @@ class MPET:
         print("Q_AQ[mL]:",Q_AQ)
         print("Q_FM[mL]:",Q_FM)
 
-        E_1 = 0.4#[1/mL]
-        E_2 = 0.1
+        E_1 = 1#[1/mL]
+        E_2 = 0.25
 
 
         p_r = 0.0 #referance pressure, mmHg

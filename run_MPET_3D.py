@@ -21,7 +21,8 @@ class BoundaryInner(SubDomain):
 
 def run_MPET_3D_TestSphere():
 
-    ymlFile = open("configurations/3D_TEST_RigidMotion_3PWK_RaisedCVP.yml") 
+    ymlFile = open("configurations/3D_3PWK_TEST_C4.yml") 
+    
     parsedValues = yaml.load(ymlFile, Loader=yaml.FullLoader)
     materialParameters = parsedValues['material_parameters']
     settings = parsedValues['solver_settings']
@@ -96,13 +97,11 @@ def run_MPET_3D_TestSphere():
         **boundaryParameters,
     )
     
-    #Solver3D.printSetup()
+    Solver3D.printSetup()
 
-    #Solver3D.solve()
-
-    plot_after = 20
-
-    Solver3D.plotResults(plot_after)
+    Solver3D.solve()
+    
+    Solver3D.plotResults()
 
  
 def generateUFL_BCexpressions():
