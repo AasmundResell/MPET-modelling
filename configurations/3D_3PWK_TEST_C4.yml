@@ -7,6 +7,8 @@ solver_settings:
   num_networks : 3
   num_boundaries : 2
   element_type : CG
+  solver : lu
+  preconditioner : none
   mesh_resolution : 13 #Lower than this not possible  
   file_save : 3D_3PWK_TEST_C4
   uNullspace : True
@@ -50,9 +52,9 @@ material_parameters:
 
 
 boundary_parameters:
-  Compliance_sas : 0.283 # [mL/Pa] 
-  Compliance_ven : 0.283 # [mL/Pa] 
-  Compliance_spine : 1.41 # [mL/Pa#] 
+  Compliance_sas : 0.483 # [mL/Pa] 
+  Compliance_ven : 0.483 # [mL/Pa] 
+  Compliance_spine : 2.41 # [mL/Pa#] 
   beta_sas : 1.0e-3 
   beta_ven : 1.0e-3
   p_sas_initial : 3.5

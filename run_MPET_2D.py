@@ -94,7 +94,7 @@ def run_MPET_2D_AbsoluteInflow_RigidMotion():
     
     Solver2D.printSetup()
 
-    Solver2D.solve()
+    Solver2D.blockSolve()
 
     Solver2D.plotResults()
 

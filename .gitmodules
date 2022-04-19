@@ -1,0 +1,3 @@
+[submodule "cbc.block"]
+	path = cbc.block
+	url = https://mirok-w-simula@bitbucket.org/mirok-w-simula/cbc.block.git

@@ -1,6 +1,5 @@
 from fenics import *
-from mshr import *
-from rm_basis_L2 import rigid_motions
+import rigid_motions
 import ufl
 import numpy as np
 import matplotlib.pyplot as plt
@@ -12,6 +11,11 @@ import matplotlib
 import pandas
 import glob
 from pathlib import Path
+from dolfin import *
+from block import block_mat, block_vec, block_transpose
+from block.iterative import MinRes
+from block.algebraic.petsc import AMG
+
 
 matplotlib.rcParams["lines.linewidth"] = 3
 matplotlib.rcParams["axes.linewidth"] = 3
@@ -21,6 +25,11 @@ matplotlib.rcParams["xtick.labelsize"] = "xx-large"
 matplotlib.rcParams["ytick.labelsize"] = "xx-large"
 matplotlib.rcParams["legend.fontsize"] = "xx-large"
 matplotlib.rcParams["font.size"] = 14
+
+
+# Optimization options for the form compiler
+parameters["form_compiler"]["cpp_optimize"] = True
+parameters["form_compiler"]["representation"] = "uflacs"
 
 
 class MPET:
@@ -35,45 +44,36 @@ class MPET:
         self.boundary_markers = boundary_markers
         self.boundary_conditionsU = boundary_conditionsU
         self.boundary_conditionsP = boundary_conditionsP
+        self.filesave = kwargs.get("file_save")
+        self.uNullspace = kwargs.get("uNullspace")
+        
         #Number of boundaries
-
         if kwargs.get("num_boundaries"):
             self.boundaryNum=int(kwargs.get("num_boundaries"))
         else:
             self.boundaryNum=3
 
         print("Number of boundaries:",self.boundaryNum)
-        self.filesave = kwargs.get("file_save")
-        self.uNullspace = kwargs.get("uNullspace")
+        self.numPnetworks = kwargs.get("num_networks") 
+        
 
-        # Create simulation director if not existing
-        info("Simulation directory: %s" % self.filesave)
-        if not os.path.isdir(self.filesave):
-            info("Did not find %s/, creating directory" % self.filesave)
-            os.mkdir(self.filesave)
-
-            path.mkdir(parents=True,exist_ok=True)
-            path = Path("/home/asmund/dev/MPET-modelling/%s/data_set/" %self.filesave)
-            path.mkdir(parents=True,exist_ok=True)
-            path = Path("/home/asmund/dev/MPET-modelling/%s/plots/" %self.filesave)
-            path.mkdir(parents=True,exist_ok=True)
-            path = Path("/home/asmund/dev/MPET-modelling/%s/FEM_results/" %self.filesave)
-            path.mkdir(parents=True,exist_ok=True)
 
         self.plot_from = kwargs.get("plot_from")
         self.plot_to = kwargs.get("plot_to")
     
-        self.numPnetworks = kwargs.get("num_networks") 
         self.T = kwargs.get("T")
         self.numTsteps = kwargs.get("num_T_steps")
         self.t = np.linspace(0,float(self.T),int(self.numTsteps)+1)
-        self.E =  kwargs.get("E")
-        self.nu = kwargs.get("nu")
+        
         self.element_type = kwargs.get("element_type")
+        self.solverType = kwargs.get("solver")
+        self.preconditioner = kwargs.get("preconditioner")
+        
+
         self.f_val = kwargs.get("f")
         self.rho = kwargs.get("rho")
-
-        #For each network
+        self.nu = kwargs.get("nu")
+        self.E =  kwargs.get("E")
         self.mu_f = kwargs.get("mu_f")
         self.kappa = kwargs.get("kappa")
         self.alpha_val = kwargs.get("alpha")
@@ -84,9 +84,9 @@ class MPET:
         self.gamma = np.reshape(kwargs.get("gamma"),(self.numPnetworks,self.numPnetworks))
         self.K_val = []
 
-        
+        for i in range(self.numPnetworks):
+            self.gamma[i,i] = sum(self.gamma[i,:])
 
-        
         #Ensure lists
         if not isinstance(self.alpha_val,list): self.alpha_val = [self.alpha_val]
         if not isinstance(self.c_val,list): self.c_val = [self.c_val]
@@ -101,13 +101,13 @@ class MPET:
         
         self.sourceFile = kwargs.get("source_file")
         self.scaleMean = kwargs.get("scale_mean")
-        self.g = [self.ReadSourceTerm(),None,None]
-        
+        self.g = [self.GenerateNumpySeries(),None,None]
         self.Lambda = self.nu*self.E/((1+self.nu)*(1-2*self.nu))
         self.mu = self.E/(2*(1+self.nu))        
         self.conversionP = 133.32 #Pressure conversion: mmHg to Pa
         self.dim = self.mesh.topology().dim()
 
+        
         #Boundary parameters
         if kwargs.get("Compliance_sas"):
             self.C_SAS =  kwargs.get("Compliance_sas")
@@ -130,8 +130,393 @@ class MPET:
 
         self.p_BC_initial = [kwargs.get("p_ven_initial"),kwargs.get("p_sas_initial")]
         self.p_BC_initial.append(kwargs.get("p_spine_initial"))
+        
 
-        #if kwargs.get("p_spine_initial"):
+    def blockSolve(self):
+
+        """
+        Solves the MPET problem as a block system
+        """
+
+        print("\nSetting up problem...\n")
+
+        print("Generating UFL expressions\n")
+        self.generateUFLexpressions()
+        
+        mpi_comm = MPI.comm_world
+
+        
+        self.ds = Measure("ds", domain=self.mesh, subdomain_data=self.boundary_markers)
+        self.n = FacetNormal(self.mesh)  # normal vector on the boundary
+
+        self.dt = self.T / self.numTsteps
+
+        # Add progress bar
+        progress = Progress("Time-stepping", self.numTsteps)
+        set_log_level(LogLevel.PROGRESS)
+        
+        xdmfU = XDMFFile(self.filesave + "/FEM_results/u.xdmf")
+        xdmfU.parameters["flush_output"]=True
+
+        xdmfP0 = XDMFFile(self.filesave + "/FEM_results/p0.xdmf")
+        xdmfP0.parameters["flush_output"]=True
+
+        xdmfP = []
+        for i in range(self.numPnetworks):
+            xdmfP.append(XDMFFile(self.filesave + "/FEM_results/p" + str(i+1) + ".xdmf"))        
+            xdmfP[i].parameters["flush_output"]=True
+
+        #f for float value, not dolfin expression
+        p_VEN_f = self.p_BC_initial[0]
+        p_SAS_f = self.p_BC_initial[1]
+        p_SP_f = self.p_BC_initial[2]
+        
+
+        print("P_VEN =,", p_VEN_f)
+        print("P_SAS =,", p_SAS_f)
+
+        if self.dim == 3:
+            dimZ = 6
+        elif self.dim == 2:
+            dimZ = 3
+
+        # Class representing the intial conditions for pressures
+        class InitialConditions(UserExpression):
+            def __init__(self,p_initial):
+                super().__init__(degree=1)
+                self.P_init = p_initial
+
+            def eval(self, values, x):
+                values = self.P_init
+
+            def value_shape(self):
+                return (1,)
+
+        p0_init = InitialConditions(self.p_initial[0])
+        p1_init = InitialConditions(self.p_initial[1])
+        p2_init = InitialConditions(self.p_initial[2])
+        p3_init = InitialConditions(self.p_initial[3])
+        
+        # variational formulation
+        sources = []  # Contains the source term for each network
+        transfer = [] # Contains the transfer terms for each network
+        innerProdP = []
+        # Contains the inner product of the gradient of p_j for each network
+        dotProdP = []  # Contains the dot product of alpha_j & p_j,
+        timeD_ = []  # Time derivative for the current step
+        timeD_n = []  # Time derivative for the previous step
+
+        self.bcs_D = []  # Contains the terms for the Dirichlet boundaries
+        self.integrals_N = []  # Contains the integrals for the Neumann boundaries
+        self.time_expr = []  # Terms that needs to be updated at each timestep
+        # Terms that contains the windkessel bc that is updated each timestep
+        self.windkessel_terms = []
+
+        # Contains the integrals for the Robin boundaries, LHS
+        self.integrals_R_L = []
+        # Contains the integrals for the Robin boundaries, RHS
+        self.integrals_R_R = []
+
+        print(self.dim)
+
+        """
+        Ve = VectorElement(self.element_type, self.mesh.ufl_cell(), 2, self.dim)  # Displacements
+        Qe = FiniteElement(self.element_type, self.mesh.ufl_cell(), 1)  # Pressures
+        
+        Q = FunctionSpace(self.mesh, Qe)
+        V = FunctionSpace(self.mesh, Ve)
+        """
+
+        V = VectorFunctionSpace(self.mesh,'CG', degree=2,dim=2)
+        Q = FunctionSpace(self.mesh, 'CG' ,1)
+
+
+        print("dim V:",V.dim())
+        print("dim Q:",Q.dim())
+        u, v = TrialFunction(V), TestFunction(V)
+        p, q = TrialFunction(Q), TestFunction(Q)
+
+        u_prev = Function(V)
+        p0_prev = Function(Q)
+        p1_prev = Function(Q)
+        p2_prev = Function(Q)
+        p3_prev = Function(Q)
+
+        
+        #Apply initial conditions
+        p0_prev.vector()[:] = self.p_initial[0]
+        p1_prev.vector()[:] = self.p_initial[1]
+        p2_prev.vector()[:] = self.p_initial[2]
+        p3_prev.vector()[:] = self.p_initial[3]
+        
+        self.applyPressureBC_BLOCK(Q,p,q)
+        self.applyDisplacementBC(V,v)
+
+        def a_u(u,v):
+            return self.mu * (inner(grad(u), grad(v)) + inner(grad(u), nabla_grad(v))) * dx
+
+        def a_p(K):
+            return self.dt*K * dot(grad(p), grad(q)) * dx
+        
+        def b(p,v):
+            return inner(p,div(v))* dx
+    
+        def c(alpha):
+            return alpha / self.Lambda * dot(p, q) * dx
+
+        def d(p,q,eq,numP): #Time derivatives
+            d_p = 0
+            if (eq==numP):
+                print("Adding storage term for equation {}".format(eq))
+                d_p  = self.c[eq-1] * p
+            d_eps  = self.alpha[eq] / self.Lambda * self.alpha[numP]*p 
+            return (d_p + d_eps) * q * dx
+
+        def f(g, q):
+            return dot(g, q) * dx
+
+
+        # Terms for total pressure equation
+        c0 = c(self.alpha[0])
+        c1 = c(self.alpha[1])
+        c2 = c(self.alpha[2])
+        c3 = c(self.alpha[3])
+
+        # Time derivatives, current step
+        d10 = d(p,q,1,0)
+        d11 = d(p,q,1,1)
+        d12 = d(p,q,1,2)
+        d13 = d(p,q,1,3)
+
+        d20 = d(p,q,2,0)
+        d21 = d(p,q,2,1)
+        d22 = d(p,q,2,2)
+        d23 = d(p,q,2,3)
+
+        d30 = d(p,q,2,0)
+        d31 = d(p,q,2,1)
+        d32 = d(p,q,2,2)
+        d33 = d(p,q,2,3)
+
+        # Time derivatives, previous step
+        d10_prev = d(p0_prev,q,1,0)
+        d11_prev = d(p1_prev,q,1,1)
+        d12_prev = d(p2_prev,q,1,2)
+        d13_prev = d(p3_prev,q,1,3)
+
+        d20_prev = d(p0_prev,q,2,0)
+        d21_prev = d(p1_prev,q,2,1)
+        d22_prev = d(p2_prev,q,2,2)
+        d23_prev = d(p3_prev,q,2,3)
+
+        d30_prev = d(p0_prev,q,3,0)
+        d31_prev = d(p1_prev,q,3,1)
+        d32_prev = d(p2_prev,q,3,2)
+        d33_prev = d(p3_prev,q,3,3)
+
+
+        #Transfer terms
+        s11 = self.dt*self.gamma[0,0]*dot(p,q)*dx
+        s12 = self.dt*self.gamma[0,1]*dot(p,q)*dx
+        s13 = self.dt*self.gamma[0,2]*dot(p,q)*dx
+        s21 = self.dt*self.gamma[1,0]*dot(p,q)*dx
+        s22 = self.dt*self.gamma[1,1]*dot(p,q)*dx
+        #s23 = self.dt*self.gamma[1,2]*dot(p,q)*dx
+        s31 = self.dt*self.gamma[2,0]*dot(p,q)*dx
+        #s32 = self.dt*self.gamma[2,1]*dot(p,q)*dx
+        s33 = self.dt*self.gamma[2,2]*dot(p,q)*dx
+        
+        # Source term for p1
+        g_space = FunctionSpace(self.mesh, "CG",1)
+        g_1 = Function(g_space)
+        self.time_expr.append((self.g[0], g_1))
+
+        ##BLOCK_SYSTEM##
+        """
+
+        P*[Au  Bu  0  0  0  L; *[u,  = P*[F_u,
+           Bu' A0  B1 B2 B3 0;   p0, =    0,
+           0   C0  A1 C2 C3  0;   p1, =    G1 + Ct,
+           0   D0  D1 A2 D3 0;   p2, =    0_n + Dt,
+           0   E0  E1 E2 A3 0;   p3, =    R3 + Et,
+           L'  0   0   0  0  0]      z]  =    0]
+        
+        """
+        ##BLOCK_MATRIX##
+
+        ##MOMENTUM_AND_RIGID_MOTION##
+        a = a_u(u,v)
+        Au = assemble(a)
+        Bu = assemble(b(p,v))
+        m = inner(u, v)*dx
+        M = assemble(m)
+        X = VectorFunctionSpace(self.mesh, 'R', 0, dim=dimZ)
+        Z = None
+        Zh = rigid_motions.RMBasis(V, X, Z)  # L^2 orthogonal
+        L = M*Zh
+
+        ##TOTAL_PRESSURE##
+        A0 = assemble(-c0)
+        B1 = assemble(-c1)
+        B2 = assemble(-c2)
+        B3 = assemble(-c3)
+
+        ##FLUID_PRESSURE_1##
+        C0 = assemble(d10)
+        A1 = assemble(d11 + a_p(self.K[0]) + s11)
+        C2 = assemble(d12-s12)
+        C3 = assemble(d13-s13)
+
+        ##FLUID_PRESSURE_2##
+        D0 = assemble(d20)
+        D1 = assemble(d21-s21)
+        A2 = assemble(d22 + a_p(self.K[1]) + s22)
+        D3 = assemble(d23)#-s23)
+
+        ##FLUID_PRESSURE_3##
+        E0 = assemble(d30)
+        E1 = assemble(d31-s31)
+        E2 = assemble(d32)#-s32)
+        A3 = assemble(d33 + a_p(self.K[2]) + s33 + self.dt*sum(self.integrals_R_L))
+        
+        ##MATRIX_ASSEMBLY##
+        AA = block_mat([[Au,                  Bu, 0,  0,  0, L],
+                        [block_transpose(Bu),A0, B1, B2, B3, 0],
+                        [0,                  C0, A1, C2, C3, 0],
+                        [0,                  D0, D1, A2, D3, 0],
+                        [0,                  E0, E1, E2, A3, 0],
+                        [block_transpose(L), 0,  0,  0,  0,  0],
+                        ])
+
+        # Block diagonal preconditioner
+        IV = assemble(a + m)
+        IQ = assemble(inner(p, q)*dx)
+        IX = rigid_motions.identity_matrix(X)
+        P1 = assemble(d11 + a_p(self.K[0]) + s11)
+        P2 = assemble(d22 + a_p(self.K[1]) + s22)
+        P3 = assemble(d33 + a_p(self.K[2]) + s33)
+
+        BB = block_mat([[AMG(IV), 0,       0,       0,       0,       0],
+                        [0,       AMG(IQ), 0,       0,       0,       0],
+                        [0,       0,       AMG(P1), 0,       0,       0],
+                        [0,       0,       0,       AMG(P2), 0,       0],
+                        [0,       0,       0,       0,       AMG(P3), 0],
+                        [0,       0,       0,       0,       0,       IX],
+                        ])
+
+
+        x0 =  AA.create_vec() #Initial guess
+        [as_backend_type(xi).vec().setRandom() for xi in x0]
+
+        AAinv = MinRes(AA, precond=BB, initial_guess=x0, maxiter=120, tolerance=1E-8,
+                   show=2, relativeconv=True)
+
+        ##BLOCK_VECTOR##
+
+        ##MOMENTUM##
+        bu = assemble(sum(self.integrals_N)) #Only applies for this specific set of BC
+
+        ##TOTAL_PRESSURE##
+        b0 = assemble(inner(Constant(0), q)*dx)
+
+        ##FLUID_PRESSURE_1##
+        b1 = assemble(d10_prev+ d11_prev+ d12_prev+ d13_prev + self.dt*f(g_1, q))
+
+        ##FLUID_PRESSURE_2##
+        b2 = assemble(d20_prev+ d21_prev+ d22_prev+ d23_prev)
+
+        ##FLUID_PRESSURE_3##
+        b3 = assemble(d30_prev + d31_prev + d32_prev + d33_prev + self.dt*sum(self.integrals_R_R))
+
+        ##RIGID_MOTION##
+        # Equivalent to assemble(inner(Constant((0, )*6), q)*dx) but cheaper
+        bz = Function(X).vector()
+
+        bcs = block_bc([[None, None, None], [None],[None],[self.bcs_D[0]],[None]], False)
+
+        rhs_bc = bcs.apply(AA)
+
+        dV_PREV_SAS = 0.0
+        dV_PREV_VEN = 0.0
+
+        x = None
+
+        for self.i,t in enumerate(self.t):    #range(0,self.numTsteps+1): #Time loop
+            
+            self.update_time_expr(t)# Update all time dependent terms
+            print("t:",t)
+
+            ##VECTOR_ASSEMBLY
+            bb = block_assemble([bu, b0, b1, b2, b3, bz])
+            rhs_bc.apply(bb)
+
+            x = AAinv * bb
+
+            U,P0,P1,P2,P3 = x
+            u = Function(V, U)
+            p0 = Function(Q, P0)
+            p1 = Function(Q, P1)
+            p2 = Function(Q, P2)
+            p3 = Function(Q, P3)
+
+            pj = [p1,p2,p3]
+
+            results = self.generate_diagnostics(u,p0,p1,p2,p3)
+
+            #Write solution at time t
+            xdmfU.write(u, t)
+            xdmfP0.write(p0, t)
+            for j in range(self.numPnetworks):
+                xdmfP[j].write(pj[j], t)
+
+
+            #For calculating volume change in Windkessel model
+            results["dV_SAS_PREV"] = dV_PREV_SAS
+            results["dV_VEN_PREV"] = dV_PREV_VEN
+
+            results["total_inflow"] = float(self.m)
+            
+            p_SAS_f, p_VEN_f,p_SP_f,Vv_dot,Vs_dot,Q_AQ,Q_FM = self.coupled_3P_model(p_SAS_f,p_VEN_f,p_SP_f,results) #calculates windkessel pressure @ t
+            #p_SAS_f, p_VEN_f,p_SP_f,Vv_dot,Vs_dot,Q_AQ,Q_FM = self.coupled_3P_model_MK_constrained(p_SAS_f,p_VEN_f,p_SP_f,results) #calculates windkessel pressure @ t
+            
+
+            self.update_windkessel_expr(p_SAS_f,p_VEN_f) # Update all terms dependent on the windkessel pressures
+
+
+            results["p_SAS"] = p_SAS_f
+            results["p_VEN"] = p_VEN_f
+            results["p_SP"] = p_SP_f
+
+            results["Q_AQ"] = Q_AQ
+            results["Q_FM"] = Q_FM
+            results["Vv_dot"] = Vv_dot
+            results["Vs_dot"] =  Vs_dot
+            results["t"] = t
+
+            dV_PREV_SAS = results["dV_SAS"]
+            dV_PREV_VEN = results["dV_VEN"]
+
+            pickle.dump(results, open("%s/data_set/qois_%d.pickle" % (self.filesave, i), "wb"))
+            
+
+            u_prev.vector()[:] = U
+            p0_prev.vector()[:] = P0
+            p1_prev.vector()[:] = P1
+            p2_prev.vector()[:] = P2
+            p3_prev.vector()[:] = P3
+
+            progress += 1
+
+         
+        res = []
+        res = split(up)
+        u = project(res[0], W.sub(0).collapse())
+        p = []
+        
+        self.u_sol = u
+        self.p_sol = p
+
+
 
     def solve(self):
 
@@ -168,7 +553,6 @@ class MPET:
         p_VEN_f = self.p_BC_initial[0]
         p_SAS_f = self.p_BC_initial[1]
         p_SP_f = self.p_BC_initial[2]
-        
 
 
         print("P_VEN =,", p_VEN_f)
@@ -188,7 +572,7 @@ class MPET:
         
         if self.uNullspace:
             
-            Z = rigid_motions(self.mesh)
+            Z = rm_basis(self.mesh)
             dimZ = len(Z)
             print("LengthZ:", dimZ)
             RU = VectorElement('R', self.mesh.ufl_cell(), 0, dimZ)
@@ -243,8 +627,9 @@ class MPET:
         # Contains the integrals for the Robin boundaries, RHS
         self.integrals_R_R = []
 
-        sigmoid = "1/(1+exp(-t + 4))"
-        self.RampSource = Expression(sigmoid,t=0.0,degree=2)
+        #sigmoid = "1/(1+exp(-t + 4))"
+        #self.RampSource = Expression(sigmoid,t=0.0,degree=2)
+        
         def a_u(u, v):
             return self.mu * (inner(grad(u), grad(v)) + inner(grad(u), nabla_grad(v))) * dx
 
@@ -262,26 +647,32 @@ class MPET:
             d_eps  = self.alpha[numP+1] / self.Lambda * sum(a * b for a, b in zip(self.alpha, p[1:])) 
             return (1 / self.dt)*(d_p + d_eps) * q[numP + 2] * dx
                 
-        def F(f, v):
+        def f(f, v):
             return dot(f, v) * dx(self.mesh)
 
         
         #Apply terms for each fluid network
         for i in range(self.numPnetworks):  # apply for each network
             if isinstance(
-                self.g[i], dolfin.cpp.adaptivity.TimeSeries
-            ):  # If the source term is a time series instead of a an expression
+                self.g[i], TimeSeries
+            ):  # If the source term is a TimeSeries object
                 print("Adding timeseries for source term")
                 g_space = FunctionSpace(self.mesh, "CG",1)
                 g_i = Function(g_space)
-                sources.append(F(g_i, q[i + 2]))  # Applying source term
+                sources.append(f(g_i, q[i + 2]))  # Applying source term
+                self.time_expr.append((self.g[i], g_i))
+            elif isinstance(self.g[i], np.ndarray):  # If the timeseries term is a numpy array
+                print("Adding numpy timeseries for source term")
+                g_space = FunctionSpace(self.mesh, "CG",1)
+                g_i = Function(g_space)
+                sources.append(f(g_i, q[i + 2]))  # Applying source term
                 self.time_expr.append((self.g[i], g_i))
             elif self.g[i] is not None:
                 print("Adding expression for source term")
-                sources.append(F(self.g[i], q[i + 2]))  # Applying source term
+                sources.append(f(self.g[i], q[i + 2]))  # Applying source term
                 self.time_expr.append(self.g[i])
 
-            innerProdP.append(a_p(self.K[i], p_[i + 2], q[i + 2]))  # Applying diffusive termlg
+            innerProdP.append(a_p(self.K[i], p_[i + 2], q[i + 2]))  # Applying diffusive term
 
             # Applying time derivatives
             timeD_.append(d(p_,q,i)) #lhs
@@ -292,7 +683,8 @@ class MPET:
             print("Adding transfer terms")
             for i in range(self.numPnetworks): 
                 for j in range(self.numPnetworks):
-                    if self.gamma[i,j]:
+
+                    if self.gamma[i,j] and i != j:
                         transfer.append(self.gamma[i,j]*(p_[i+2]-p_[j+2])*q[i+2]*dx)
         dotProdP = [c(alpha,p, q[1]) for alpha,p in zip(self.alpha, p_[1:])]
 
@@ -325,11 +717,12 @@ class MPET:
 
         
         self.applyPressureBC(W,p_,q)
-        self.applyDisplacementBC(W,q)
+        self.applyDisplacementBC(W,q[0])
  
         #self.time_expr.append(self.RampSource)
 
-        lhs = (
+        #########lhs###########
+        F = (
             a_u(p_[0], q[0])
             + b(p_[1], q[0])
             + b(q[1], p_[0])
@@ -341,11 +734,13 @@ class MPET:
         )
 
         if self.uNullspace:
-                lhs += sum(z[i]*inner(q[0], Z[i])*dx() for i in range(dimZ)) \
-                    + sum(r[i]*inner(p_[0], Z[i])*dx() for i in range(dimZ))
-        
-        rhs = (
-            F(self.f, q[0])
+                F += sum(z[i]*inner(q[0], Z[i])*dx() for i in range(dimZ)) \
+                  + sum(r[i]*inner(p_[0], Z[i])*dx() for i in range(dimZ))
+
+        #########rhs##########
+
+        F  -= (
+            f(self.f, q[0])
             + sum(sources)
             + sum(timeD_n)
             + sum(self.integrals_N)
@@ -353,35 +748,32 @@ class MPET:
         )
 
         [self.time_expr.append(self.f[i]) for i in range(self.dim)]
-        A = assemble(lhs)
-        [bc.apply(A) for bc in self.bcs_D]
+        A = assemble(lhs(F))
 
         up = Function(W)
-        self.t = 0.0
-
- 
+       
         dV_PREV_SAS = 0.0
         dV_PREV_VEN = 0.0
       
-        for i in range(0,self.numTsteps+1): #Time loop
+        for self.i,t in enumerate(self.t):    #range(0,self.numTsteps+1): #Time loop
             
-            self.update_time_expr(self.t)# Update all time dependent terms
-            self.RampSource.t = self.t
-            b = assemble(rhs)
-            for bc in self.bcs_D:
-                #            update_t(bc, t)
-                bc.apply(b)
+            self.update_time_expr(t)# Update all time dependent terms
+            print("t:",t)
+            b = assemble(rhs(F))
 
-            solve(A, up.vector(), b) #Solve system
+            [bc.apply(A) for bc in self.bcs_D]
+            [bc.apply(b) for bc in self.bcs_D]
+            
+            solve(A, up.vector(), b, self.solverType, self.preconditioner ) #Solve system
 
             #Write solution at time t
             up_split = up.split(deepcopy = True)
             results = self.generate_diagnostics(*up_split)
 
-            xdmfU.write(up.sub(0), self.t)
-            xdmfP0.write(up.sub(1), self.t)
+            xdmfU.write(up.sub(0), t)
+            xdmfP0.write(up.sub(1), t)
             for j in range(self.numPnetworks):
-                xdmfP[j].write(up.sub(j+2), self.t)
+                xdmfP[j].write(up.sub(j+2), t)
 
 
             #For calculating volume change in Windkessel model
@@ -390,9 +782,8 @@ class MPET:
 
             results["total_inflow"] = float(self.m)
             
-            #p_SAS_f, p_VEN_f,Vv_dot,Vs_dot,Q_AQ = self.coupled_2P_model(p_SAS_f,p_VEN_f,results) #calculates windkessel pressure @ t
             p_SAS_f, p_VEN_f,p_SP_f,Vv_dot,Vs_dot,Q_AQ,Q_FM = self.coupled_3P_model(p_SAS_f,p_VEN_f,p_SP_f,results) #calculates windkessel pressure @ t
-            #p_SAS_f, p_VEN_f,p_SP_f,Vv_dot,Vs_dot,Q_AQ,Q_FM = self.coupled_3P_nonlinear_model(p_SAS_f,p_VEN_f,p_SP_f,results) #calculates windkessel pressure @ t
+            #p_SAS_f, p_VEN_f,p_SP_f,Vv_dot,Vs_dot,Q_AQ,Q_FM = self.coupled_3P_model_MK_constrained(p_SAS_f,p_VEN_f,p_SP_f,results) #calculates windkessel pressure @ t
             
 
             self.update_windkessel_expr(p_SAS_f,p_VEN_f) # Update all terms dependent on the windkessel pressures
@@ -406,7 +797,7 @@ class MPET:
             results["Q_FM"] = Q_FM
             results["Vv_dot"] = Vv_dot
             results["Vs_dot"] =  Vs_dot
-            results["t"] = self.t
+            results["t"] = t
 
             dV_PREV_SAS = results["dV_SAS"]
             dV_PREV_VEN = results["dV_VEN"]
@@ -417,7 +808,7 @@ class MPET:
             up_n.assign(up)
             progress += 1
 
-            self.t += self.dt
+            #self.t += self.dt
          
         res = []
         res = split(up)
@@ -560,15 +951,17 @@ class MPET:
         Qv_figs.savefig(plotDir + "brain-Q_ven.png")
 
         
-
-        BV = df["Q_SAS_N2"] + df["Q_VEN_N2"] 
-        
+        BA = df["G_a"]
+        BV = df["Q_SAS_N2"] + df["Q_VEN_N2"]
+                
         # Plot outflow of venous blood
-        BV_axs.plot(times[initPlot:endPlot], BV[initPlot:endPlot], markers[0], color="seagreen")
+        BV_axs.plot(times[initPlot:endPlot], BV[initPlot:endPlot], markers[0], color="seagreen",label="$B_{v}$")
+        BV_axs.plot(times[initPlot:endPlot], BA[initPlot:endPlot], markers[0], color="darkmagenta",label="$B_{a}$")
         BV_axs.set_xlabel("time (s)")
         BV_axs.set_xticks(x_ticks)
-        BV_axs.set_ylabel("Venous outflow (mm$^3$/s)")
+        BV_axs.set_ylabel("Absolute blood flow (mm$^3$/s)")
         BV_axs.grid(True)
+        BV_axs.legend()
         BV_figs.savefig(plotDir + "brain-BV.png")
 
 
@@ -634,7 +1027,7 @@ class MPET:
 
     def generate_diagnostics(self,*args):
         results = {}
-        u = args[0]
+        u = args[0] 
         p_list = []
         for arg in args[1:self.numPnetworks+2]:
             p_list.append(arg)
@@ -665,6 +1058,7 @@ class MPET:
                 -self.K[i-1] * dot(grad(p),self.n) * self.ds(3))
 
 
+        results["G_a"] = self.m
         results["dV_SAS"] = assemble(dot(u,self.n)*self.ds(1))
         results["dV_VEN"] = assemble(dot(u,self.n)*(self.ds(2) + self.ds(3)))
         
@@ -783,7 +1177,7 @@ class MPET:
         
         """
 
-        if (self.t < 4.0):
+        if (self.t[self.i] < 4.0):
             VolScale = 1/10000 #mm³ to mL   
         else:
             VolScale = 1/1000 #mm³ to mL
@@ -845,6 +1239,85 @@ class MPET:
 
         return x[0], x[1],x[2],Vv_dot,Vs_dot,Q_AQ,Q_FM
 
+
+    def coupled_3P_model_MK_constrained(self,p_SAS,p_VEN,p_SP,results):
+        """
+        This model calculates a 3-pressure lumped model for the SAS, ventricles and spinal-SAS compartments
+
+        Also adds a Monroe-Kellie (MK) constrain to the equation through a multiplier
+
+        Solves using implicit (backward) Euler
+
+        Equations:
+        dp_sas/dt = 1/C_sas(Vs_dot + Q_SAS + G_aq(p_VEN - p_SAS) + G_fm(p_SP-p_SAS))
+        dp_ven/dt = 1/C_ven(Vv_dot + Q_VEn + G_aq(p_SAS - p_VEN))
+        G_fm(p_SAS-p_SP) = Vs_dot + Q_SAS + G_aq(p_VEN - p_SAS))
+        
+        """
+
+        if (self.t[self.i] < 4.0):
+            VolScale = 1/10000 #mm³ to mL   
+        else:
+            VolScale = 1/1000 #mm³ to mL
+
+
+        #P_SAS is determined from Windkessel parameters
+        Q_SAS = results["Q_SAS_N3"]
+        print("Q_SAS[mm³] :",Q_SAS)
+
+        #P_VEN is determined from volume change of the ventricles
+        Q_VEN = results["Q_VEN_N3"]
+        print("Q_VEN[mm³] :",Q_VEN)
+
+        #Volume change of ventricles
+        Vv_dot = 1/self.dt*(results["dV_VEN"]-results["dV_VEN_PREV"])
+        
+        #Volume change of SAS
+        Vs_dot = 1/self.dt*(results["dV_SAS"]-results["dV_SAS_PREV"])
+        
+        
+        print("Volume change ventricles[mm³] :",Vv_dot)
+        print("Volume change SAS[mm³] :",Vs_dot)
+
+        #Conductance
+        G_aq = np.pi*self.d**4/(128*self.L*self.mu_f[2]) #Poiseuille flow constant
+        #G_aq = 5/133 #mL/mmHg to mL/Pa, from Ambarki2007
+        G_aq = G_aq*1/1000 #mm³/Pa to mL/Pa
+        G_fm = G_aq*10 #from Ambarki2007
+
+        # "Positive" direction upwards, same as baledent article
+        Q_AQ = G_aq*(p_SAS - p_VEN)
+        Q_FM = G_aq*(p_SP - p_SAS)
+       
+        print("Q_AQ[mL]:",Q_AQ)
+        print("Q_FM[mL]:",Q_FM)
+
+
+        b_SAS = p_SAS + self.dt/self.C_SAS * (Q_SAS  + Vs_dot)* VolScale
+        b_VEN = p_VEN + self.dt/self.C_VEN * (Q_VEN + Vv_dot)  * VolScale
+        b_SP = (Vs_dot + Q_SAS) * VolScale
+        A_11 = 1 + self.dt*G_aq/self.C_SAS + self.dt*G_fm/self.C_SAS 
+        A_12 = -self.dt*G_aq/self.C_SAS
+        A_13 = - self.dt*G_fm/self.C_SAS
+        A_21 = -self.dt*G_aq/self.C_VEN
+        A_22 = 1 + self.dt*G_aq/self.C_VEN
+        A_23 = 0
+        A_31 = G_aq + G_fm 
+        A_32 = -G_aq
+        A_33 = -G_fm
+
+
+        b = np.array([b_SAS, b_VEN, b_SP])
+        A = np.array([[A_11, A_12, A_13],[A_21, A_22, A_23],[A_31, A_32, A_33]])
+        x = np.linalg.solve(A,b) #x_0 = p_SAS, x_1 = p_VEN, x_2 = p_SAS
+
+        print("Pressure for SAS: ", x[0])
+        print("Pressure for Ventricles: ", x[1])
+        print("Pressure for Spinal Cord: ", x[2])
+       
+        return x[0], x[1],x[2],Vv_dot,Vs_dot,Q_AQ,Q_FM
+
+
     def coupled_3P_nonlinear_model(self,p_SAS,p_VEN,p_SP,results):
         """
         This model calculates a 3-pressure lumped model for the SAS, ventricles and spinal-SAS compartments
@@ -858,7 +1331,7 @@ class MPET:
         
         """
 
-        if (self.t < 4.0):
+        if (self.t[self.i] < 4.0):
             VolScale = 1/10000 #mm³ to mL   
         else:
             VolScale = 1/1000 #mm³ to mL
@@ -919,6 +1392,66 @@ class MPET:
 
         return x[0], x[1],x[2],Vv_dot,Vs_dot,Q_AQ,Q_FM
 
+
+    def applyPressureBC_BLOCK(self,Q,p,q):
+        
+        for i in range(1,self.numPnetworks+1):  # apply for each network
+            print("Network: ", i)    
+            for j in range(1, self.boundaryNum + 1):  # for each boundary
+                print("Boundary: ", j)
+                if "Dirichlet" in self.boundary_conditionsP[(i, j)]:
+                    print(
+                        "Applying Dirichlet BC for pressure network: %i and boundary surface %i "
+                        % (i, j)
+                    )
+                    expr = self.boundary_conditionsP[(i, j)]["Dirichlet"]
+                    bcp = DirichletBC(
+                        Q,
+                        expr,
+                        self.boundary_markers,
+                        j,
+                    )
+                    self.bcs_D.append(bcp)
+                    self.time_expr.append(expr)
+                elif "DirichletWK" in self.boundary_conditionsP[(i, j)]:
+                    print(
+                        "Applying Dirichlet Windkessel BC for pressure network: %i and boundary surface %i "
+                        % (i, j)
+                    )
+                    expr = self.boundary_conditionsP[(i, j)]["DirichletWK"]
+                    bcp = DirichletBC(
+                        Q,
+                        expr*self.Pscale,
+                        self.boundary_markers,
+                        j,
+                    )
+                    self.bcs_D.append(bcp)
+                    self.windkessel_terms.append(expr)
+                elif "Robin" in self.boundary_conditionsP[(i, j)]:
+                    print("Applying Robin BC for pressure")
+                    print("Applying Robin LHS")
+                    beta, P_r = self.boundary_conditionsP[(i, j)]["Robin"]
+                    self.integrals_R_L.append(inner(beta * p, q) * self.ds(j))
+                    if P_r:
+                        print("Applying Robin RHS")
+                        self.integrals_R_R.append(inner(beta * P_r, q) * self.ds(j))
+                        self.time_expr.append(P_r)
+                elif "RobinWK" in self.boundary_conditionsP[(i, j)]:
+                    print("Applying Robin BC with Windkessel referance pressure")
+                    beta, P_r = self.boundary_conditionsP[(i, j)]["RobinWK"]
+                        
+                    print("Applying Robin LHS")
+                    self.integrals_R_L.append(inner(beta * p * self.Pscale, q) * self.ds(j))
+
+                    print("Applying Robin RHS")
+                    self.integrals_R_R.append(inner(beta * P_r * self.Pscale, q) * self.ds(j))
+                    self.windkessel_terms.append(P_r)
+                elif "Neumann" in self.boundary_conditionsP[(i,j)]:
+                    if self.boundary_conditionsP[(i,j)]["Neumann"] != 0:
+                        print("Applying Neumann BC.")
+                        N = self.boundary_conditionsP[(i,j)]["Neumann"]
+                        self.integrals_N.append(inner(-self.n * N * self.Pscale, q) * self.ds(j))
+                        self.time_expr.append(N)
 
 
 
@@ -985,7 +1518,7 @@ class MPET:
                         self.time_expr.append(N)
 
 
-    def applyDisplacementBC(self,W,q):
+    def applyDisplacementBC(self,W,v):
         # Defining boundary conditions for displacements
         for i in self.boundary_conditionsU:
             print("i = ", i)
@@ -1006,13 +1539,13 @@ class MPET:
                 if self.boundary_conditionsU[i]["Neumann"] != 0:
                     print("Applying Neumann BC.")
                     N = self.boundary_conditionsU[i]["Neumann"]
-                    self.integrals_N.append(inner(-self.n * N, q[0]) * self.ds(i))
+                    self.integrals_N.append(inner(-self.n * N, v) * self.ds(i))
                     self.time_expr.append(N)
             elif "NeumannWK" in self.boundary_conditionsU[i]:
                 if self.boundary_conditionsU[i]["NeumannWK"] != 0:
                     print("Applying Neumann BC with windkessel term.")
                     N = self.boundary_conditionsU[i]["NeumannWK"]
-                    self.integrals_N.append(inner(-self.n * N * self.Pscale, q[0]) * self.ds(i))
+                    self.integrals_N.append(inner(-self.n * N * self.Pscale, v) * self.ds(i))
                     self.windkessel_terms.append(N)
 
                  
@@ -1133,9 +1666,12 @@ class MPET:
                             print("passing for: ", expr)
                             pass
             elif isinstance(expr, tuple):
-                if isinstance(expr[0], dolfin.cpp.adaptivity.TimeSeries):
+                if isinstance(expr[0], TimeSeries):   #dolfin.cpp.adaptivity.
                     expr[0].retrieve(expr[1].vector(), t,interpolate=False)
                     self.m = assemble(expr[1]*dx)
+                elif isinstance(expr[0], np.ndarray):  
+                    expr[1].vector()[:] = expr[0][self.i]    
+                    self.m = assemble(expr[1]*dx)                
                 else:
                     self.operand_update(expr, t)
                     
@@ -1177,12 +1713,29 @@ class MPET:
         
         return df
 
-    def ReadSourceTerm(self):
-        FileName = self.sourceFile + "series"
-        if os.path.exists(FileName + ".h5"):
-            print("Removing old timeseries")
-            os.remove(FileName + ".h5")
-            
+    def GenerateNumpySeries(self):
+        
+        source_scale = 1/1173670.5408281302 #1/mm³
+       
+        Q = FunctionSpace(self.mesh,"CG",1)
+        
+        time_period = 1.0
+        data = np.loadtxt(self.sourceFile, delimiter = ",")
+        t = data[:,0]
+        source = data[:,1]
+        g = np.interp(self.t,t,source,period = 1.0)*source_scale
+        if self.scaleMean:
+            g -= np.mean(g)
+        source_fig, source_ax = pylab.subplots(figsize=(16, 8))
+        source_ax.plot(self.t,g)
+        #plt.show()
+        return g
+    
+"""
+    def GenerateTimeSeries(self):
+        
+        FileName = self.sourceFile # + "series"
+        
         g = TimeSeries(FileName)
         
         source_scale = 1/1173670.5408281302 #1/mm³
@@ -1204,4 +1757,9 @@ class MPET:
             source = project(source, Q)
             g.store(source.vector(),self.t[j])
         return g
+
+"""
+
+
+
 

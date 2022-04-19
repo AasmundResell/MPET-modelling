@@ -2,16 +2,18 @@
 
 solver_settings:
   log_level : 20
-  T : 24.0
-  num_T_steps : 600
+  T : 4.0
+  num_T_steps : 100
   num_networks : 3
   num_boundaries : 2
   element_type : CG
+  solver : lu
+  preconditioner : none
   mesh_resolution : 5 #Lower than this not possible  
   file_save : 2D_3PWK_RaisedCVP
   uNullspace : True
-  plot_from : 20
-  plot_to : 24
+  plot_from : 12
+  plot_to : 16
 
 material_parameters:
   E : 1642 # Pa, Young modulus
@@ -23,12 +25,12 @@ material_parameters:
     - 1.0e-14 #m² Permeability fluid 3
   alpha :
     - 0.4 #Biot-Willis coefficient fluid 1
-    - 0.3 #Biot-Willis coefficient fluid 2
-    - 0.3 #Biot-Willis coefficient fluid 3
+    - 0.2 #Biot-Willis coefficient fluid 2
+    - 0.4 #Biot-Willis coefficient fluid 3
   c :
-    - 2.9e-4 #Storage coefficient fluid 1, 1/Pa
-    - 1.5e-5 #Storage coefficient fluid 2, 1/Pa
-    - 2.9e-4 #Storage coefficient fluid 3, 1/Pa
+    - 2.9e-5 #Storage coefficient fluid 1, 1/Pa
+    - 1.5e-3 #Storage coefficient fluid 2, 1/Pa
+    - 2.9e-6 #Storage coefficient fluid 3, 1/Pa
   mu_f :
     - 2.67e-3 #Viscosity fluid 1, Pa*s
     - 2.67e-3 #Viscosity fluid 2, Pa*s
@@ -40,26 +42,26 @@ material_parameters:
   gamma :
     - 0 #1/(Pa*s) Transfer network: 1-1
     - 1.0e-3 #1/(Pa*s) Transfer network: 1-2
-    - 1.0e-6 #1/(Pa*s) Transfer network: 1-3
+    - 1.0e-4 #1/(Pa*s) Transfer network: 1-3
     - 1.0e-3 #1/(Pa*s) Transfer network: 2-1
     - 0 #1/(Pa*s) Transfer network: 2-2
     - 0 #1/(Pa*s) Transfer network: 2-3
-    - 1.0e-6 #1/(Pa*s) Transfer network: 3-1
+    - 1.0e-4 #1/(Pa*s) Transfer network: 3-1
     - 0 #1/(Pa*s) Transfer network: 3-2
     - 0 #1/(Pa*s) Transfer network: 3-3
 
 
 boundary_parameters:
-  Compliance_sas : 0.483 # [mL/Pa] 
-  Compliance_ven : 0.483 # [mL/Pa] 
-  Compliance_spine : 2.41 # [mL/Pa#] 
+  Compliance_sas : 0.883 # [mL/Pa] 
+  Compliance_ven : 0.883 # [mL/Pa] 
+  Compliance_spine : 4.41 # [mL/Pa#] 
   beta_sas : 1.0e-3 
   beta_ven : 1.0e-3
   p_sas_initial : 2.8
   p_ven_initial : 2.8
   p_spine_initial : 2.8
   #ScalePressure : 133 #mmHg to Pa
-  p_vein : 50 # Back pressure, vein network
+  p_vein : 5 # Back pressure, vein network
   #for alt model, remember that mesh is in mm
   length : 70.0 #[mm]
   diameter : 3.0 #[mm]
