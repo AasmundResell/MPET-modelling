@@ -19,9 +19,70 @@ class BoundaryInner(SubDomain):
         tol = 1e-10
         return on_boundary and  (x[0] ** 2 + x[1] ** 2 + x[2] ** 2) ** (1 / 2) <= 32
 
+def run_MPET_3D():
+
+    ymlFile = open("configurations/TEST_CBC_BLOCK.yml") 
+    
+    parsedValues = yaml.load(ymlFile, Loader=yaml.FullLoader)
+    materialParameters = parsedValues['material_parameters']
+    settings = parsedValues['solver_settings']
+    sourceParameters = parsedValues['source_data']
+    boundaryParameters = parsedValues['boundary_parameters']
+    meshN = settings["mesh_resolution"]
+
+
+    mesh,subdomains,facet_f = read_brain_mesh_3D()
+    
+    U,pVentricles,pSkull = generateUFL_BCexpressions()
+    beta_VEN = boundaryParameters["beta_ven"]
+    beta_SAS = boundaryParameters["beta_sas"]
+    p_BP = boundaryParameters["p_vein"] #Back pressure, veins
+
+    #Generate boundary conditions for the displacements
+    #The integer keys represents a boundary (marker)
+    boundary_conditionsU = {
+        1: {"Dirichlet": U},
+        2: {"NeumannWK": pVentricles},
+        3: {"NeumannWK": pVentricles},
+    }
+    
+    #Generate boundary conditions for the fluid pressures
+    #Indice 1 in the touple key represents the fluid network
+    #Indice 2 in the touple key represents a boundary (marker)
+    boundary_conditionsP = { #Applying windkessel bc
+        (1, 1): {"Neumann": 0}, 
+        (1, 2): {"Neumann": 0},
+        (1, 3): {"Neumann": 0},
+        (2, 1): {"Dirichlet": Constant(p_BP)},
+        (2, 2): {"Neumann":0},
+        (2, 3): {"Dirichlet": Constant(p_BP)}, #Cerebellum close to jugular veins
+        (3, 1): {"RobinWK": (beta_SAS,pSkull)},
+        (3, 2): {"RobinWK": (beta_VEN,pVentricles)},
+        (3, 3): {"RobinWK": (beta_VEN,pVentricles)},
+    }
+
+    Solver3D = MPET(
+        mesh,
+        facet_f,
+        boundary_conditionsU,
+        boundary_conditionsP,
+        **settings,
+        **materialParameters,
+        **sourceParameters,
+        **boundaryParameters,
+    )
+    
+    Solver3D.printSetup()
+
+    Solver3D.blockSolve()
+    #Solver3D.AMG_testing()
+
+    Solver3D.plotResults()
+
+
 def run_MPET_3D_TestSphere():
 
-    ymlFile = open("configurations/3D_3PWK_TEST_C4.yml") 
+    ymlFile = open("configurations/TEST_CBC_BLOCK.yml") 
     
     parsedValues = yaml.load(ymlFile, Loader=yaml.FullLoader)
     materialParameters = parsedValues['material_parameters']
@@ -32,6 +93,7 @@ def run_MPET_3D_TestSphere():
     meshN = settings["mesh_resolution"]
 
 
+    """
     mesh = Mesh("meshes/sphere_mesh/sphere_hollow.xml")
     facet_f = MeshFunction("size_t", mesh, 2)
 
@@ -60,7 +122,6 @@ def run_MPET_3D_TestSphere():
     info(mesh)
     info(facet_f)
 
-    """
 
     U,pVentricles,pSkull = generateUFL_BCexpressions()
     beta_VEN = boundaryParameters["beta_ven"]
@@ -70,8 +131,8 @@ def run_MPET_3D_TestSphere():
     #Generate boundary conditions for the displacements
     #The integer keys represents a boundary (marker)
     boundary_conditionsU = {
-        1: {"NeumannWK": pSkull},
-        2: {"NeumannWK": pVentricles},
+        1: {"Dirichlet": U},
+        2: {"Neumann": 0},
     }
     
     #Generate boundary conditions for the fluid pressures
@@ -98,9 +159,9 @@ def run_MPET_3D_TestSphere():
     )
     
     Solver3D.printSetup()
-
-    Solver3D.solve()
-    
+    #Solver3D.AMG_testing()
+    Solver3D.blockSolve()
+    #Solver3D.solve()
     Solver3D.plotResults()
 
  
@@ -134,7 +195,7 @@ def generateUFL_BCexpressions():
         pSkull_UFL,
         pVentricles_UFL,
     ) = UFLvariables
-    U_UFL = as_vector((Expression("0.0", degree=2), Expression("0.0", degree=2)))
+    U_UFL = as_vector((Constant(0), Constant(0), Constant(0)))
     return U_UFL,pSkull_UFL, pVentricles_UFL
 
 
@@ -142,3 +203,4 @@ def generateUFL_BCexpressions():
 
 if __name__ == "__main__":
     run_MPET_3D_TestSphere()
+    #run_MPET_3D()

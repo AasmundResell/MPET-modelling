@@ -3,8 +3,7 @@ from block.object_pool import vec_pool
 from petsc4py import PETSc
 import dolfin as d
 import numpy as np
-from mpi4py import MPI
-
+from mpi4py import MPI as pyMPI
 
 class MyExpression(d.Expression):
     def eval(self, value, x):
@@ -75,7 +74,7 @@ def rm_basis(mesh):
                                '((x[2]-C2)*v0-(x[0]-C0)*v2)/A',
                                '((x[0]-C0)*v1-(x[1]-C1)*v0)/A'),
                                C0=C0, C1=C1, C2=C2, 
-                               v0=v[0], v1=v[1], v2=v[2], A=sqrt(w),
+                               v0=v[0], v1=v[1], v2=v[2], A=d.sqrt(w),
                                degree=1)
         # Roations are discrebed as rot around v-axis centered in center of
         # gravity 
@@ -96,24 +95,24 @@ def identity_matrix(V, e=1.):
     diag = d.Function(V).vector()
     global_size = diag.size()
     local_size = diag.local_size()
+    #mpi_comm = d.MPI.comm_world
 
-    comm = MPI.Comm()
-    rank = comm.Get_rank()  # no AttributeError
-    comm = V.mesh().mpi_comm().tompi4py()
+    mpi_comm = V.mesh().mpi_comm()
     
     mat = PETSc.Mat().createAIJ(size=[[local_size, global_size],
-                                      [local_size, global_size]], nnz=1, comm=comm)
-    diag = as_backend_type(diag).vec()
+                                      [local_size, global_size]], nnz=1, comm=mpi_comm)
+    diag = d.as_backend_type(diag).vec()
     diag.set(e)
     mat.setDiagonal(diag)
 
-    lgmap = PETSc.LGMap().create(map(int, V.dofmap().tabulate_local_to_global_dofs()), comm=comm)
+    print(type(V.dofmap().tabulate_local_to_global_dofs()))
+    lgmap = PETSc.LGMap().create(list(map(int, V.dofmap().tabulate_local_to_global_dofs())), comm=mpi_comm)
     mat.setLGMap(lgmap, lgmap)
 
     mat.assemblyBegin()
     mat.assemblyEnd()
 
-    return PETScMatrix(mat)
+    return d.PETScMatrix(mat)
 
 
 
@@ -141,7 +140,7 @@ class RMBasis(block_base):
         self.Q = Q
 
         self.indices = range(*Q.dofmap().ownership_range())
-        #self.comm = V.mesh().mpi_comm().tompi4py()
+        self.comm = V.mesh().mpi_comm()
 
     def __iter__(self):
         '''Iterate over basis functions (in V)'''
@@ -167,9 +166,9 @@ class RMBasis(block_base):
     @vec_pool
     def create_vec(self, dim):
         if dim == 1:
-            return Function(self.Q).vector()
+            return d.Function(self.Q).vector()
         else:
-            return Function(self.V).vector()
+            return d.Function(self.V).vector()
 
     def rigid_motion(self, c):
         '''Rigid motion represented in the basis by c.'''
@@ -180,9 +179,9 @@ class RMBasis(block_base):
             x.zero()
             for ck, zk in zip(c, self.basis): x.axpy(ck, zk)
             
-            return Function(self.V, x)
+            return d.Function(self.V, x)
 
-        if isinstance(c, GenericVector):
+        if isinstance(c, d.GenericVector):
             c = c.gather_on_zero()  # Only master, other have []
             # Communicate the coefficients to everybody
             if len(c) == 0:
@@ -255,6 +254,23 @@ class Projector(block_base):
     def create_vec(self, dim):
         return Function(self.V).vector()
 
+""" Must install pytrilinos first!
+class ML(block_base):
+    def __init__(self,A,pdes=1):
+        MLList = {
+            "smoother: type" : "ML symmteric Gauss-Seidel",
+            "aggregation: type" : "Uncoupled",
+            "ML validate parameter list" : True,
+        }
+        self.A = A
+        self.ml_prec = MultiLevelPreconditioner(A.down_cast().mat(),0)
+        self.ml_prec.SetParameterList(MMList)
+        self.ml_agg = self.ml_prec.GetML_Aggregate()
+        self.ml_prec.ComputePreconditioner()
+    def matvec(self,b):
+        x = self.A.create_vec()
+        self.ml_prec.ApplyInverse(b.down_cast().vec(),x.down_cast().vec())
+        return x
 
 def test_I():
     '''Identity'''
@@ -266,6 +282,7 @@ def test_I():
     assert (x-y).norm('linf') < 1E-14
 
     return True
+"""
 
 
 def test_Zh(n=4):

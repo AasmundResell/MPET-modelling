@@ -12,10 +12,12 @@ import pandas
 import glob
 from pathlib import Path
 from dolfin import *
-from block import block_mat, block_vec, block_transpose
-from block.iterative import MinRes
+from block import block_mat, block_vec, block_transpose, block_bc,block_assemble
+from block.iterative import *
 from block.algebraic.petsc import AMG
-
+from mshr import *
+import timeit
+import warnings
 
 matplotlib.rcParams["lines.linewidth"] = 3
 matplotlib.rcParams["axes.linewidth"] = 3
@@ -27,9 +29,6 @@ matplotlib.rcParams["legend.fontsize"] = "xx-large"
 matplotlib.rcParams["font.size"] = 14
 
 
-# Optimization options for the form compiler
-parameters["form_compiler"]["cpp_optimize"] = True
-parameters["form_compiler"]["representation"] = "uflacs"
 
 
 class MPET:
@@ -130,10 +129,82 @@ class MPET:
 
         self.p_BC_initial = [kwargs.get("p_ven_initial"),kwargs.get("p_sas_initial")]
         self.p_BC_initial.append(kwargs.get("p_spine_initial"))
+
+
+    def AMG_testing(self):
+        """ Used for testing the settings of the AMG preconditions on a simplified
+        linear elasticity problem
+        Solves 
+        -div(sym grad u) = f in  Omega
+            sigma.n = h on  boundary
+        where sigma(u) = 2*mu*eps(u) + lambda*div(u)*I. The problem is reformulated by
+        Lagrange multiplier nu to inforce orthogonality with the space of rigid
+        motions. To get robustnes in lmbda solid pressure p = lambda*div u is introduced. 
+        The system to be solved with MinRes is 
+        P*[A C  B; *[u, = P*[L,
+           C' D 0;   p,      0,
+           B' 0 0]   nu]     0]
+        with P a precondtioner. We run on series of meshes to show mesh independence
+        of the solver.
+        """
+
+        progress = Progress("Time-stepping", self.numTsteps)
+        
+        # For cube
+        V = VectorFunctionSpace(self.mesh, 'CG', 2)
+        Q = FunctionSpace(self.mesh, 'CG', 1)
+        
+        
+        
+        u, v = TrialFunction(V), TestFunction(V)
+        p0, q0 = TrialFunction(Q), TestFunction(Q)
+        
+        
+        # Strain
+        epsilon = lambda u: sym(grad(u))
+        # Stress
+        gdim = self.mesh.geometry().dim()
+
+        #a = inner(sym(grad(u)), sym(grad(v)))*dx
+        a = self.mu * (inner(grad(u), grad(v)) + inner(grad(u), nabla_grad(v))) * dx
+        A = assemble(a)
         
 
-    def blockSolve(self):
+        
 
+        f = Expression(('A*sin(2*x[0])', 'A*cos(3*(x[0]+x[1]+x[2]))', 'A*sin(x[2])'),
+                       degree=3, A=0.01)
+        h = Constant((0, 10, 20))
+
+        L = inner(f, v)*dx + inner(h, v)*ds
+
+        b = assemble(L)
+
+        IV = assemble(a)
+        B = AMG(IV)
+
+        # Solve, using random initial guess
+        x0 = A.create_vec()
+        #[as_backend_type(xi).setRandom() for xi in x0]
+
+        xdmfU = XDMFFile(self.filesave + "/FEM_results/U.xdmf")
+        xdmfU.parameters["flush_output"]=True
+        x = None
+        Ainv = MinRes(A,precond=B,tolerance=1e-3, initial_guess=x0,maxiter=200, show=3)
+
+        t = 0
+        start = timeit.timeit()
+        print("Timeit started")
+        x = Ainv*b
+        end = timeit.timeit()
+        print("Elaspsed time: ",end - start)
+
+        u = Function(V,x)
+        xdmfU.write(u, t)
+
+
+    def blockSolve(self):
+            
         """
         Solves the MPET problem as a block system
         """
@@ -143,12 +214,10 @@ class MPET:
         print("Generating UFL expressions\n")
         self.generateUFLexpressions()
         
-        mpi_comm = MPI.comm_world
-
         
         self.ds = Measure("ds", domain=self.mesh, subdomain_data=self.boundary_markers)
         self.n = FacetNormal(self.mesh)  # normal vector on the boundary
-
+        print(self.n)
         self.dt = self.T / self.numTsteps
 
         # Add progress bar
@@ -162,6 +231,8 @@ class MPET:
         xdmfP0.parameters["flush_output"]=True
 
         xdmfP = []
+        mpi_comm = MPI.comm_world
+
         for i in range(self.numPnetworks):
             xdmfP.append(XDMFFile(self.filesave + "/FEM_results/p" + str(i+1) + ".xdmf"))        
             xdmfP[i].parameters["flush_output"]=True
@@ -217,52 +288,47 @@ class MPET:
         # Contains the integrals for the Robin boundaries, RHS
         self.integrals_R_R = []
 
-        print(self.dim)
-
-        """
-        Ve = VectorElement(self.element_type, self.mesh.ufl_cell(), 2, self.dim)  # Displacements
-        Qe = FiniteElement(self.element_type, self.mesh.ufl_cell(), 1)  # Pressures
+        V = VectorFunctionSpace(self.mesh,'CG', degree=2,dim=self.dim)
+        Q0 = FunctionSpace(self.mesh, 'CG' ,1)
+        Q1 = FunctionSpace(self.mesh, 'CG' ,1)
         
-        Q = FunctionSpace(self.mesh, Qe)
-        V = FunctionSpace(self.mesh, Ve)
-        """
 
-        V = VectorFunctionSpace(self.mesh,'CG', degree=2,dim=2)
-        Q = FunctionSpace(self.mesh, 'CG' ,1)
+        print("dim V element:",V.element().space_dimension())
+        print("dim Q element:",Q0.element().space_dimension()) 
 
-
-        print("dim V:",V.dim())
-        print("dim Q:",Q.dim())
         u, v = TrialFunction(V), TestFunction(V)
-        p, q = TrialFunction(Q), TestFunction(Q)
+        p0, q0 = TrialFunction(Q0), TestFunction(Q0)
+        p1, q1 = TrialFunction(Q1), TestFunction(Q1)
 
         u_prev = Function(V)
-        p0_prev = Function(Q)
-        p1_prev = Function(Q)
-        p2_prev = Function(Q)
-        p3_prev = Function(Q)
+        p0_prev = Function(Q0)
+        p1_prev = Function(Q1)
+        #p2_prev = Function(Q)
+        #p3_prev = Function(Q)
 
         
         #Apply initial conditions
-        p0_prev.vector()[:] = self.p_initial[0]
-        p1_prev.vector()[:] = self.p_initial[1]
-        p2_prev.vector()[:] = self.p_initial[2]
-        p3_prev.vector()[:] = self.p_initial[3]
+        #p0_prev.vector()[:] = self.p_initial[0]
+        #p1_prev.vector()[:] = self.p_initial[1]
+        #p2_prev.vector()[:] = self.p_initial[2]
+        #p3_prev.vector()[:] = self.p_initial[3]
         
-        self.applyPressureBC_BLOCK(Q,p,q)
-        self.applyDisplacementBC(V,v)
+        #self.applyPressureBC_BLOCK(Q,p,q)
+        #self.applyDisplacementBC(V,v)
+        self.alpha[0] = 1
+        self.alpha[1] = 1
 
         def a_u(u,v):
             return self.mu * (inner(grad(u), grad(v)) + inner(grad(u), nabla_grad(v))) * dx
 
-        def a_p(K):
+        def a_p(K,p,q):
             return self.dt*K * dot(grad(p), grad(q)) * dx
         
-        def b(p,v):
-            return inner(p,div(v))* dx
+        def b_u(p,v):
+            return inner(div(v),p)* dx
     
-        def c(alpha):
-            return alpha / self.Lambda * dot(p, q) * dx
+        def b_0(alpha,p,q):
+            return alpha / self.Lambda * inner(p, q) * dx
 
         def d(p,q,eq,numP): #Time derivatives
             d_p = 0
@@ -273,112 +339,250 @@ class MPET:
             return (d_p + d_eps) * q * dx
 
         def f(g, q):
-            return dot(g, q) * dx
+            return inner(g, q) * dx
+
 
 
         # Terms for total pressure equation
-        c0 = c(self.alpha[0])
-        c1 = c(self.alpha[1])
-        c2 = c(self.alpha[2])
-        c3 = c(self.alpha[3])
+        #b2 = b_0(self.alpha[2])
+        #b3 = b_0(self.alpha[3])
 
         # Time derivatives, current step
-        d10 = d(p,q,1,0)
-        d11 = d(p,q,1,1)
-        d12 = d(p,q,1,2)
-        d13 = d(p,q,1,3)
+        #d12 = d(p,q,1,2)
+        #d13 = d(p,q,1,3)
 
-        d20 = d(p,q,2,0)
-        d21 = d(p,q,2,1)
-        d22 = d(p,q,2,2)
-        d23 = d(p,q,2,3)
+        #d21 = d(p,q,2,1)
+        #d22 = d(p,q,2,2)
+        #d23 = d(p,q,2,3)
 
-        d30 = d(p,q,2,0)
-        d31 = d(p,q,2,1)
-        d32 = d(p,q,2,2)
-        d33 = d(p,q,2,3)
+        #d31 = d(p,q,2,1)
+        #d32 = d(p,q,2,2)
+        #d33 = d(p,q,2,3)
 
         # Time derivatives, previous step
-        d10_prev = d(p0_prev,q,1,0)
-        d11_prev = d(p1_prev,q,1,1)
-        d12_prev = d(p2_prev,q,1,2)
-        d13_prev = d(p3_prev,q,1,3)
 
-        d20_prev = d(p0_prev,q,2,0)
-        d21_prev = d(p1_prev,q,2,1)
-        d22_prev = d(p2_prev,q,2,2)
-        d23_prev = d(p3_prev,q,2,3)
+        #d12_prev = d(p2_prev,q,1,2)
+        #d13_prev = d(p3_prev,q,1,3)
 
-        d30_prev = d(p0_prev,q,3,0)
-        d31_prev = d(p1_prev,q,3,1)
-        d32_prev = d(p2_prev,q,3,2)
-        d33_prev = d(p3_prev,q,3,3)
+        #d20_prev = d(p0_prev,q,2,0)
+        #d21_prev = d(p1_prev,q,2,1)
+        #d22_prev = d(p2_prev,q,2,2)
+        #d23_prev = d(p3_prev,q,2,3)
+
+        #d30_prev = d(p0_prev,q,3,0)
+        #d31_prev = d(p1_prev,q,3,1)
+        #d32_prev = d(p2_prev,q,3,2)
+        #d33_prev = d(p3_prev,q,3,3)
 
 
         #Transfer terms
-        s11 = self.dt*self.gamma[0,0]*dot(p,q)*dx
-        s12 = self.dt*self.gamma[0,1]*dot(p,q)*dx
-        s13 = self.dt*self.gamma[0,2]*dot(p,q)*dx
-        s21 = self.dt*self.gamma[1,0]*dot(p,q)*dx
-        s22 = self.dt*self.gamma[1,1]*dot(p,q)*dx
+        #s11 = self.dt*self.gamma[0,0]*dot(p,q)*dx
+        #s12 = self.dt*self.gamma[0,1]*dot(p,q)*dx
+        #s13 = self.dt*self.gamma[0,2]*dot(p,q)*dx
+        #s21 = self.dt*self.gamma[1,0]*dot(p,q)*dx
+        #s22 = self.dt*self.gamma[1,1]*dot(p,q)*dx
         #s23 = self.dt*self.gamma[1,2]*dot(p,q)*dx
-        s31 = self.dt*self.gamma[2,0]*dot(p,q)*dx
+        #s31 = self.dt*self.gamma[2,0]*dot(p,q)*dx
         #s32 = self.dt*self.gamma[2,1]*dot(p,q)*dx
-        s33 = self.dt*self.gamma[2,2]*dot(p,q)*dx
-        
+        #33 = self.dt*self.gamma[2,2]*dot(p,q)*dx
+
         # Source term for p1
         g_space = FunctionSpace(self.mesh, "CG",1)
         g_1 = Function(g_space)
         self.time_expr.append((self.g[0], g_1))
 
         ##BLOCK_SYSTEM##
-        """
 
+        """
         P*[Au  Bu  0  0  0  L; *[u,  = P*[F_u,
            Bu' A0  B1 B2 B3 0;   p0, =    0,
-           0   C0  A1 C2 C3  0;   p1, =    G1 + Ct,
-           0   D0  D1 A2 D3 0;   p2, =    0_n + Dt,
+           0   C0  A1 C2 C3 0;   p1, =    G1 + Ct,
+           0   D0  D1 A2 D3 0;   p2, =    Dt,
            0   E0  E1 E2 A3 0;   p3, =    R3 + Et,
-           L'  0   0   0  0  0]      z]  =    0]
+           L'  0   0  0  0  0]   z]  =    0]
         
         """
         ##BLOCK_MATRIX##
 
         ##MOMENTUM_AND_RIGID_MOTION##
-        a = a_u(u,v)
-        Au = assemble(a)
-        Bu = assemble(b(p,v))
-        m = inner(u, v)*dx
-        M = assemble(m)
-        X = VectorFunctionSpace(self.mesh, 'R', 0, dim=dimZ)
-        Z = None
-        Zh = rigid_motions.RMBasis(V, X, Z)  # L^2 orthogonal
-        L = M*Zh
+        epsilon = lambda u: sym(grad(u))
+        #sigma = lambda u: 2*self.mu*epsilon(u) + self.Lambda*tr(epsilon(u))*Identity(self.dim)
+
+        au = 2*self.mu*inner(epsilon(u), epsilon(v))*dx
+        bu = b_u(p0,v)
+        buT = b_u(q0,u)
+
+        a0 = b_0(self.alpha[0],p0,q0)
+        b0 = b_0(self.alpha[1],p1,q0)
+        b0T = b_0(self.alpha[1],p0,q1)
+
+        d11 = (self.c[0]+self.alpha[1]**2 / self.Lambda)*p1*q1*dx
+        c = d11 - a_p(self.K[0],p1,q1)
+
+        d10_prev = self.alpha[1]*self.alpha[0] / self.Lambda*p0_prev*q1*dx
+        d11_prev = (self.c[0]+self.alpha[1]**2 / self.Lambda)*p1_prev*q1*dx
+
+        Au = assemble(au)
+        Bu = assemble(bu)
+        BuT = assemble(buT)
+
 
         ##TOTAL_PRESSURE##
-        A0 = assemble(-c0)
-        B1 = assemble(-c1)
-        B2 = assemble(-c2)
-        B3 = assemble(-c3)
+        A0 = assemble(-a0)
+        B0 = assemble(-b0)
 
-        ##FLUID_PRESSURE_1##
-        C0 = assemble(d10)
-        A1 = assemble(d11 + a_p(self.K[0]) + s11)
-        C2 = assemble(d12-s12)
-        C3 = assemble(d13-s13)
-
-        ##FLUID_PRESSURE_2##
-        D0 = assemble(d20)
-        D1 = assemble(d21-s21)
-        A2 = assemble(d22 + a_p(self.K[1]) + s22)
-        D3 = assemble(d23)#-s23)
-
-        ##FLUID_PRESSURE_3##
-        E0 = assemble(d30)
-        E1 = assemble(d31-s31)
-        E2 = assemble(d32)#-s32)
-        A3 = assemble(d33 + a_p(self.K[2]) + s33 + self.dt*sum(self.integrals_R_L))
+        ##FLUID_PRESSURES##
+        B0T =assemble(-buT)
+        C = assemble(-c)
         
+
+        ##MATRIX_ASSEMBLY##
+        AA = block_mat([[Au,  Bu,  0],
+                        [BuT, A0,  B0],
+                        [0,   B0T, C],
+                        ])
+        """
+        # NOTE: Avoiding use of Q space in the assembly - dense blocks!
+        X = VectorFunctionSpace(self.mesh, 'R', 0, dim=6)
+        Zh = rigid_motions.RMBasis(V, X, Z)  # L^2 orthogonal
+        L = M*Zh
+        LT = Zh*Z
+
+        ##MATRIX_ASSEMBLY_TEST##
+        AA = block_mat([[Au,  Bu,  0,   L],
+                        [BuT, A0,  B0, 0],
+                        [0,   B0T, C,  0],
+                        [LT,  A0,  B0, 0]
+                        ])
+        BB = block_mat([[AMG(IV), 0,       0,       0],
+                        [0,       AMG(I0), 0,       0],
+                        [0,       0,       AMG(IP), 0],
+                        [0,       0,       0,       AMG(IX)],
+                        ]) 
+
+        """
+
+
+        IV = assemble(au)
+        I0 = assemble(inner(p0, q0)*dx)
+        IP = assemble(-c)
+        #IX = rigid_motions.identity_matrix(X)
+
+        BB = block_mat([[AMG(IV), 0,       0],
+                        [0,       AMG(I0), 0],
+                        [0,       0,       AMG(IP)],
+                        ]) 
+
+
+        x0 =  AA.create_vec() #Initial guess       
+        U, P0, P1 = x0
+
+        # Solve, using random initial guess
+        #[as_backend_type(xi).vec().setRandom() for xi in x0]
+    
+     
+        t = 0.0
+        #ps = Expression("A*(1-cos(2*pi*t))",degree=3,t=t,A=0.1)
+        pv = Expression("A*(1-cos(2*pi*t))",degree=3,t=t,A=200.0)
+        
+        ppv = Expression("A*(1-cos(2*pi*t))",degree=3,t=t,A=2000.0)
+
+        #ps = Constant(0)
+        #pv = Constant(0)
+        
+        rhs_bc = block_bc([self.bcs_D, None,None], False)
+        #rhs_bc = block_bc([DirichletBC(V, Constant((0,0,0)),self.boundary_markers,1), None,None], False)
+        rhs_bc.apply(AA)
+
+
+        BBu = assemble(inner(Constant((0,0,0)), v)*dx)
+        #BBu = assemble(inner(-self.n*pv, v)*ds) #Pressure on surface is negative (compression)
+        BB0 = assemble(inner(Constant(0), q0)*dx)
+        BBC = assemble( -d10_prev - d11_prev- self.dt*f(g_1, q1) - self.dt* dot(ppv, q1) * ds)
+        
+        bb = block_assemble([BBu,BB0,BBC])
+
+        r1 = bb - AA*x0
+        y = BB*r1
+        beta1 = block_vec.inner(r1,y)
+        
+        
+        #  Test for an indefinite preconditioner.
+        #  If b = 0 exactly, stop with x = 0.
+        if beta1 < 0:
+            raise ValueError('Preconditioner is negative-definite')
+        if beta1 == 0:
+            warnings.warn("Preconditioner vec-mat-vec product is zero")
+        else:
+            print('Preconditioner is positive-definite')
+
+        #Define solver type
+        AAinv = MinRes(AA, precond=BB, initial_guess=x0, maxiter=120, tolerance=1E-8,
+                   show=2, relativeconv=True)
+
+        tvec = np.arange(0,self.T,self.dt)
+        DV_Vec = np.zeros(len(tvec))
+        g_1.vector()[:] = self.g[0][0]
+        self.m = assemble(g_1*dx(self.mesh))
+
+        
+        u = Function(V)
+        p0 = Function(Q0)
+        p1 = Function(Q1)
+        
+        x = None
+        i=0
+
+        while t < self.T:
+            #BBu = assemble(inner(-self.n*pv, v)*ds) #Pressure on surface is negative (compression)
+            #BB0 = assemble(inner(Constant(0), q)*dx)
+            BBC = assemble(-d10_prev - d11_prev - self.dt*inner(g_1, q1)*dx)
+            bb = block_assemble([BBu,BB0,BBC])
+            rhs_bc.apply(AA).apply(bb)
+            
+
+            start = timeit.timeit()
+            print("Timeit started")
+            x = AAinv * bb
+            end = timeit.timeit()
+            print("Elaspsed time: ",end - start)
+            U,P0,P1 = x
+            u.vector()[:] = U[:]
+            p0.vector()[:] = P0[:]
+            p1.vector()[:] = P1[:]
+            results = self.generate_diagnostics(u,p0,p1)
+
+            #Write solution at time t
+            xdmfU.write(u, t)
+            xdmfP0.write(p0, t)
+            xdmfP[0].write(p1, t)
+            t +=float(self.dt)
+            pv.t = t
+            ppv.t = t
+
+
+            g_1.vector()[:] = self.g[0][i+1]
+            print(g_1.vector()[:])
+
+            u_prev.vector()[:] = U[:]
+            p0_prev.vector()[:] = P0[:]
+            p1_prev.vector()[:] = P1[:]
+
+            self.m = assemble(g_1*dx(self.mesh))
+            print("Arterial inflow:",self.m)
+
+            progress += 1
+            
+            results["t"] = t
+
+            pickle.dump(results, open("%s/data_set/qois_%d.pickle" % (self.filesave, i), "wb"))
+            i +=1
+            
+
+
+
+        
+        """
         ##MATRIX_ASSEMBLY##
         AA = block_mat([[Au,                  Bu, 0,  0,  0, L],
                         [block_transpose(Bu),A0, B1, B2, B3, 0],
@@ -398,24 +602,24 @@ class MPET:
 
         BB = block_mat([[AMG(IV), 0,       0,       0,       0,       0],
                         [0,       AMG(IQ), 0,       0,       0,       0],
-                        [0,       0,       AMG(P1), 0,       0,       0],
-                        [0,       0,       0,       AMG(P2), 0,       0],
-                        [0,       0,       0,       0,       AMG(P3), 0],
+                        [0,       0,       P1,      0,       0,       0],
+                        [0,       0,       0,       P2,      0,       0],
+                        [0,       0,       0,       0,       P3,      0],
                         [0,       0,       0,       0,       0,       IX],
                         ])
-
-
         x0 =  AA.create_vec() #Initial guess
         [as_backend_type(xi).vec().setRandom() for xi in x0]
 
         AAinv = MinRes(AA, precond=BB, initial_guess=x0, maxiter=120, tolerance=1E-8,
                    show=2, relativeconv=True)
+        
 
         ##BLOCK_VECTOR##
 
         ##MOMENTUM##
-        bu = assemble(sum(self.integrals_N)) #Only applies for this specific set of BC
-
+        #bu = assemble(sum(self.integrals_N)) #Only applies for this specific set of BC
+        bu = assemble(inner(self.n*Constant(0), v)*ds)
+        
         ##TOTAL_PRESSURE##
         b0 = assemble(inner(Constant(0), q)*dx)
 
@@ -425,16 +629,44 @@ class MPET:
         ##FLUID_PRESSURE_2##
         b2 = assemble(d20_prev+ d21_prev+ d22_prev+ d23_prev)
 
+
         ##FLUID_PRESSURE_3##
-        b3 = assemble(d30_prev + d31_prev + d32_prev + d33_prev + self.dt*sum(self.integrals_R_R))
+        beta1,P_r1 =  self.boundary_conditionsP[(3,1)]["RobinWK"]
+        n31 = self.dt*inner(P_r1, q) * self.ds(1)
+        beta2,P_r2 =  self.boundary_conditionsP[(3,2)]["RobinWK"]
+        n32 = self.dt*inner(P_r2, q) * self.ds(2)
+        b3 = assemble(d30_prev + d31_prev + d32_prev + d33_prev + n31 + n32)
 
         ##RIGID_MOTION##
         # Equivalent to assemble(inner(Constant((0, )*6), q)*dx) but cheaper
         bz = Function(X).vector()
 
-        bcs = block_bc([[None, None, None], [None],[None],[self.bcs_D[0]],[None]], False)
-
+        #bcs = block_bc([None, None,None,[self.bcs_D[0]],None], False)
+        DBC = DirichletBC(Q,Constant(0)*self.Pscale,self.boundary_markers,1,)
+        bcs = block_bc([None, None,None,[DBC],None], False)
         rhs_bc = bcs.apply(AA)
+
+        """
+
+        """
+        ##TESTING
+        bb = block_assemble([bu, b0, b1, b2, b3, bz])
+        rhs_bc.apply(bb)
+        
+        x = None
+        x = AAinv * bb
+
+        U,P0,P1,P2,P3,lam = x
+
+        u = Function(V, U)
+        p0 = Function(Q, P0)
+        p1 = Function(Q, P1)
+        p2 = Function(Q, P2)
+        p3 = Function(Q, P3)
+        
+        pj = [p1,p2,p3]
+        
+        results = self.generate_diagnostics(u,p0,p1,p2,p3)
 
         dV_PREV_SAS = 0.0
         dV_PREV_VEN = 0.0
@@ -452,7 +684,7 @@ class MPET:
 
             x = AAinv * bb
 
-            U,P0,P1,P2,P3 = x
+            U,P0,P1,P2,P3,lam = x
             u = Function(V, U)
             p0 = Function(Q, P0)
             p1 = Function(Q, P1)
@@ -516,6 +748,7 @@ class MPET:
         self.u_sol = u
         self.p_sol = p
 
+        """
 
 
     def solve(self):
@@ -572,7 +805,7 @@ class MPET:
         
         if self.uNullspace:
             
-            Z = rm_basis(self.mesh)
+            Z = rigid_motions.rm_basis(self.mesh)
             dimZ = len(Z)
             print("LengthZ:", dimZ)
             RU = VectorElement('R', self.mesh.ufl_cell(), 0, dimZ)
@@ -717,7 +950,7 @@ class MPET:
 
         
         self.applyPressureBC(W,p_,q)
-        self.applyDisplacementBC(W,q[0])
+        self.applyDisplacementBC(W.sub(0),q[0])
  
         #self.time_expr.append(self.RampSource)
 
@@ -764,7 +997,7 @@ class MPET:
             [bc.apply(A) for bc in self.bcs_D]
             [bc.apply(b) for bc in self.bcs_D]
             
-            solve(A, up.vector(), b, self.solverType, self.preconditioner ) #Solve system
+            solve(A, up.vector(), b)#, self.solverType, self.preconditioner ) #Solve system
 
             #Write solution at time t
             up_split = up.split(deepcopy = True)
@@ -782,25 +1015,24 @@ class MPET:
 
             results["total_inflow"] = float(self.m)
             
-            p_SAS_f, p_VEN_f,p_SP_f,Vv_dot,Vs_dot,Q_AQ,Q_FM = self.coupled_3P_model(p_SAS_f,p_VEN_f,p_SP_f,results) #calculates windkessel pressure @ t
+            #p_SAS_f, p_VEN_f,p_SP_f,Vv_dot,Vs_dot,Q_AQ,Q_FM = self.coupled_3P_model(p_SAS_f,p_VEN_f,p_SP_f,results) #calculates windkessel pressure @ t
             #p_SAS_f, p_VEN_f,p_SP_f,Vv_dot,Vs_dot,Q_AQ,Q_FM = self.coupled_3P_model_MK_constrained(p_SAS_f,p_VEN_f,p_SP_f,results) #calculates windkessel pressure @ t
             
 
-            self.update_windkessel_expr(p_SAS_f,p_VEN_f) # Update all terms dependent on the windkessel pressures
+            #self.update_windkessel_expr(p_SAS_f,p_VEN_f) # Update all terms dependent on the windkessel pressures
 
+            #results["p_SAS"] = p_SAS_f
+            #results["p_VEN"] = p_VEN_f
+            #results["p_SP"] = p_SP_f
 
-            results["p_SAS"] = p_SAS_f
-            results["p_VEN"] = p_VEN_f
-            results["p_SP"] = p_SP_f
-
-            results["Q_AQ"] = Q_AQ
-            results["Q_FM"] = Q_FM
-            results["Vv_dot"] = Vv_dot
-            results["Vs_dot"] =  Vs_dot
+            #results["Q_AQ"] = Q_AQ
+            #results["Q_FM"] = Q_FM
+            #results["Vv_dot"] = Vv_dot
+            #results["Vs_dot"] =  Vs_dot
             results["t"] = t
 
-            dV_PREV_SAS = results["dV_SAS"]
-            dV_PREV_VEN = results["dV_VEN"]
+            #dV_PREV_SAS = results["dV_SAS"]
+            #dV_PREV_VEN = results["dV_VEN"]
 
             pickle.dump(results, open("%s/data_set/qois_%d.pickle" % (self.filesave, i), "wb"))
             
@@ -866,17 +1098,19 @@ class MPET:
         V_ax.grid(True)
         V_ax.legend()
         V_fig.savefig(plotDir + "brain-Vol.png")
-
-        # Plot volume derivative
-        dV_dot_ax.plot(times[initPlot:endPlot], df["Vv_dot"][initPlot:endPlot], markers[0], color="seagreen",label="$dV_{VEN}$/dt")
-        dV_dot_ax.plot(times[initPlot:endPlot], df["Vs_dot"][initPlot:endPlot], markers[0], color="darkmagenta",label="$dV_{SAS}$/dt")
         
-        dV_dot_ax.set_xlabel("time (s)")
-        dV_dot_ax.set_xticks(x_ticks)
-        dV_dot_ax.set_ylabel("V_dot (mm$^3$/s)")
-        dV_dot_ax.grid(True)
-        dV_dot_ax.legend()
-        dV_dot_fig.savefig(plotDir + "brain-V_dot.png")
+        if "Vv_dot" in df.keys():
+            
+            # Plot volume derivative
+            dV_dot_ax.plot(times[initPlot:endPlot], df["Vv_dot"][initPlot:endPlot], markers[0], color="seagreen",label="$dV_{VEN}$/dt")
+            dV_dot_ax.plot(times[initPlot:endPlot], df["Vs_dot"][initPlot:endPlot], markers[0], color="darkmagenta",label="$dV_{SAS}$/dt")
+            
+            dV_dot_ax.set_xlabel("time (s)")
+            dV_dot_ax.set_xticks(x_ticks)
+            dV_dot_ax.set_ylabel("V_dot (mm$^3$/s)")
+            dV_dot_ax.grid(True)
+            dV_dot_ax.legend()
+            dV_dot_fig.savefig(plotDir + "brain-V_dot.png")
 
         
         # Plot max/min of the pressures
@@ -925,38 +1159,42 @@ class MPET:
         v_ax.legend()
         v_fig.savefig(plotDir + "brain-vs.png")
 
+        if "Q_SAS_N3" in df.keys():
 
-        Q_SAS =  df["Q_SAS_N3"] 
-        Q_VEN =  df["Q_VEN_N3"]
-        
+            Q_SAS =  df["Q_SAS_N3"] 
+            
 
-        
-        # Plot outflow of CSF
-        Qs_axs.plot(times[initPlot:endPlot], Q_SAS[initPlot:endPlot], markers[0], color="seagreen",label="$Q_{SAS}$")
-
-        Qs_axs.set_xlabel("time (s)")
-        Qs_axs.set_xticks(x_ticks)
-        Qs_axs.set_ylabel("Q (mm$^3$/s)")
-        Qs_axs.grid(True)
-        Qs_axs.legend()
-        Qs_figs.savefig(plotDir + "brain-Q_sas.png")
-
-
-        Qv_axs.plot(times[initPlot:endPlot], Q_VEN[initPlot:endPlot], markers[0], color="darkmagenta",label="$Q_{VEN}$")
-        Qv_axs.set_xlabel("time (s)")
-        Qv_axs.set_xticks(x_ticks)
-        Qv_axs.set_ylabel("Q (mm$^3$/s)")
-        Qv_axs.grid(True)
-        Qv_axs.legend()
-        Qv_figs.savefig(plotDir + "brain-Q_ven.png")
+            
+            # Plot outflow of CSF
+            Qs_axs.plot(times[initPlot:endPlot], Q_SAS[initPlot:endPlot], markers[0], color="seagreen",label="$Q_{SAS}$")
+            
+            Qs_axs.set_xlabel("time (s)")
+            Qs_axs.set_xticks(x_ticks)
+            Qs_axs.set_ylabel("Q (mm$^3$/s)")
+            Qs_axs.grid(True)
+            Qs_axs.legend()
+            Qs_figs.savefig(plotDir + "brain-Q_sas.png")
+            
+            
+        if "Q_VEN_N3" in df.keys():
+            Q_VEN =  df["Q_VEN_N3"]
+            Qv_axs.plot(times[initPlot:endPlot], Q_VEN[initPlot:endPlot], markers[0], color="darkmagenta",label="$Q_{VEN}$")
+            Qv_axs.set_xlabel("time (s)")
+            Qv_axs.set_xticks(x_ticks)
+            Qv_axs.set_ylabel("Q (mm$^3$/s)")
+            Qv_axs.grid(True)
+            Qv_axs.legend()
+            Qv_figs.savefig(plotDir + "brain-Q_ven.png")
 
         
         BA = df["G_a"]
-        BV = df["Q_SAS_N2"] + df["Q_VEN_N2"]
-                
-        # Plot outflow of venous blood
-        BV_axs.plot(times[initPlot:endPlot], BV[initPlot:endPlot], markers[0], color="seagreen",label="$B_{v}$")
         BV_axs.plot(times[initPlot:endPlot], BA[initPlot:endPlot], markers[0], color="darkmagenta",label="$B_{a}$")
+        if "Q_SAS_N2" in df.keys():
+            BV = df["Q_SAS_N2"] + df["Q_VEN_N2"]
+                
+            # Plot outflow of venous blood
+            BV_axs.plot(times[initPlot:endPlot], BV[initPlot:endPlot], markers[0], color="seagreen",label="$B_{v}$")
+
         BV_axs.set_xlabel("time (s)")
         BV_axs.set_xticks(x_ticks)
         BV_axs.set_ylabel("Absolute blood flow (mm$^3$/s)")
@@ -966,32 +1204,35 @@ class MPET:
 
 
         # Plot Windkessel pressure
-        PW_axs.plot(times[initPlot:endPlot], df["p_SAS"][initPlot:endPlot], markers[0], color="seagreen",label="$p_{SAS}$")
-        PW_axs.plot(times[initPlot:endPlot], df["p_VEN"][initPlot:endPlot], markers[1], color="darkmagenta",label="$p_{VEN}$")
-
         if "p_SP" in df.keys():
             PW_axs.plot(times[initPlot:endPlot], df["p_SP"][initPlot:endPlot], markers[1], color="cornflowerblue",label="$p_{SP}$")
 
+        if "p_SAS" in df.keys():
 
-        PW_axs.set_xlabel("time (s)")
-        PW_axs.set_xticks(x_ticks)
-        PW_axs.set_ylabel("P ($Pa$)")
-        PW_axs.grid(True)
-        PW_axs.legend()
-        PW_figs.savefig(plotDir + "brain-WK.png")
+            PW_axs.plot(times[initPlot:endPlot], df["p_SAS"][initPlot:endPlot], markers[0], color="seagreen",label="$p_{SAS}$")
+        if "p_VEN" in df.keys():
 
+            PW_axs.plot(times[initPlot:endPlot], df["p_VEN"][initPlot:endPlot], markers[1], color="darkmagenta",label="$p_{VEN}$")
 
-        # Plot transfer rates (avg v_i)
-        t_ax.plot(times[initPlot:endPlot], df["T12"][initPlot:endPlot], markers[0], color="darkmagenta", label="$T_{12}$")
-        t_ax.plot(times[initPlot:endPlot], df["T13"][initPlot:endPlot], markers[0], color="royalblue", label="$T_{13}$")
-        t_ax.set_xlabel("time (s)")
-        t_ax.set_xticks(x_ticks)
-        t_ax.set_ylabel("Transfer rate ($L^2$-norm)")
-        t_ax.grid(True)
-        t_ax.legend()
-        t_fig.savefig(plotDir + "brain-Ts.png")
+            PW_axs.set_xlabel("time (s)")
+            PW_axs.set_xticks(x_ticks)
+            PW_axs.set_ylabel("P ($Pa$)")
+            PW_axs.grid(True)
+            PW_axs.legend()
+            PW_figs.savefig(plotDir + "brain-WK.png")
+
+        
+        if "T12" in df.keys():
+            # Plot transfer rates (avg v_i)
+            t_ax.plot(times[initPlot:endPlot], df["T12"][initPlot:endPlot], markers[0], color="darkmagenta", label="$T_{12}$")
+            t_ax.plot(times[initPlot:endPlot], df["T13"][initPlot:endPlot], markers[0], color="royalblue", label="$T_{13}$")
+            t_ax.set_xlabel("time (s)")
+            t_ax.set_xticks(x_ticks)
+            t_ax.set_ylabel("Transfer rate ($L^2$-norm)")
+            t_ax.grid(True)
+            t_ax.legend()
+            t_fig.savefig(plotDir + "brain-Ts.png")
     
-
         if "Q_AQ" in df.keys():
 
             Qaq_figs, Qaq_axs  = pylab.subplots(figsize=(12, 8)) #Outflow CSF to SAS
@@ -1035,9 +1276,9 @@ class MPET:
         # Volume displacement:
         dV = assemble(div(u)*dx)
         results["dV"] = dV
-        #print("div(u)*dx (mm^3) = ", dV)
-
-        V = VectorFunctionSpace(self.mesh, "DG", 0)
+        print("div(u)*dx (mm^3) = ", dV)
+        
+        V = VectorFunctionSpace(self.mesh, 'CG' ,1)
 
         # Pressures
         Vol = assemble(1*dx(self.mesh))
@@ -1048,28 +1289,33 @@ class MPET:
             results["mean_p_%d" % (i)] = assemble(p*dx)/Vol
             
             if i > 0: # Darcy velocities
-                v = project(self.K[i-1]*grad(p), V)
+                v = project(self.K[i-1]*grad(p),
+                            V,
+                            solver_type = self.solverType,
+                            preconditioner_type = self.preconditioner,
+                            )
                 v_avg = norm(v, "L2")/A
                 results["v%d_avg" % (i)] = v_avg
-
+        
                 #Calculate outflow for each network
                 results["Q_SAS_N%d" %(i)] = assemble(-self.K[i-1] * dot(grad(p), self.n) * self.ds(1))
                 results["Q_VEN_N%d" %(i)] = assemble(-self.K[i-1] * dot(grad(p), self.n) * self.ds(2)) + assemble(
                 -self.K[i-1] * dot(grad(p),self.n) * self.ds(3))
 
-
+        
         results["G_a"] = self.m
         results["dV_SAS"] = assemble(dot(u,self.n)*self.ds(1))
         results["dV_VEN"] = assemble(dot(u,self.n)*(self.ds(2) + self.ds(3)))
         
 
         # Transfer rates
+        """
         S = FunctionSpace(self.mesh, "CG", 1)
-        
         t12 = project(self.gamma[0,1]*(p_list[1]-p_list[2]),S)
         t13 = project(self.gamma[0,2]*(p_list[1]-p_list[3]),S)
         results["T12"] = norm(t12,"L2")
         results["T13"] = norm(t13,"L2")
+        """
         return results
  
 
@@ -1197,8 +1443,7 @@ class MPET:
         #Volume change of SAS
         Vs_dot = 1/self.dt*(results["dV_SAS"]-results["dV_SAS_PREV"])
         
-        
-        print("Volume change ventricles[mm³] :",Vv_dot)
+        print("Volume change VEN[mm³] :",Vv_dot)
         print("Volume change SAS[mm³] :",Vs_dot)
 
         #Conductance
@@ -1447,10 +1692,10 @@ class MPET:
                     self.integrals_R_R.append(inner(beta * P_r * self.Pscale, q) * self.ds(j))
                     self.windkessel_terms.append(P_r)
                 elif "Neumann" in self.boundary_conditionsP[(i,j)]:
-                    if self.boundary_conditionsP[(i,j)]["Neumann"] != 0:
+                   if self.boundary_conditionsP[(i,j)]["Neumann"] != 0:
                         print("Applying Neumann BC.")
                         N = self.boundary_conditionsP[(i,j)]["Neumann"]
-                        self.integrals_N.append(inner(-self.n * N * self.Pscale, q) * self.ds(j))
+                        self.integrals_N.append(inner(N * self.Pscale, q) * self.ds(j))
                         self.time_expr.append(N)
 
 
@@ -1514,11 +1759,11 @@ class MPET:
                     if self.boundary_conditionsP[(i,j)]["Neumann"] != 0:
                         print("Applying Neumann BC.")
                         N = self.boundary_conditionsP[(i,j)]["Neumann"]
-                        self.integrals_N.append(inner(-self.n * N * self.Pscale, q[i+1]) * self.ds(j))
+                        self.integrals_N.append(inner(N * self.Pscale, q[i+1]) * self.ds(j))
                         self.time_expr.append(N)
 
 
-    def applyDisplacementBC(self,W,v):
+    def applyDisplacementBC(self,V,v):
         # Defining boundary conditions for displacements
         for i in self.boundary_conditionsU:
             print("i = ", i)
@@ -1528,7 +1773,7 @@ class MPET:
                     exprU =self.boundary_conditionsU[i]["Dirichlet"][j]
                     self.bcs_D.append(
                         DirichletBC(
-                            W.sub(0).sub(j),
+                            V.sub(j),
                             exprU,
                             self.boundary_markers,
                             i,
@@ -1666,7 +1911,7 @@ class MPET:
                             print("passing for: ", expr)
                             pass
             elif isinstance(expr, tuple):
-                if isinstance(expr[0], TimeSeries):   #dolfin.cpp.adaptivity.
+                if isinstance(expr[0], TimeSeries):  
                     expr[0].retrieve(expr[1].vector(), t,interpolate=False)
                     self.m = assemble(expr[1]*dx)
                 elif isinstance(expr[0], np.ndarray):  
@@ -1699,7 +1944,7 @@ class MPET:
     def load_data(self): 
         it = None
         # Get number of results files
-        directory = os.path.join("%s/data_set/" % self.filesave)
+        directory = os.path.join("%s/data_set" % self.filesave)
         files = glob.glob("%s/qois_*.pickle" % directory)
         N = len(files)
         
@@ -1714,9 +1959,9 @@ class MPET:
         return df
 
     def GenerateNumpySeries(self):
-        
         source_scale = 1/1173670.5408281302 #1/mm³
-       
+
+
         Q = FunctionSpace(self.mesh,"CG",1)
         
         time_period = 1.0
@@ -1726,40 +1971,8 @@ class MPET:
         g = np.interp(self.t,t,source,period = 1.0)*source_scale
         if self.scaleMean:
             g -= np.mean(g)
-        source_fig, source_ax = pylab.subplots(figsize=(16, 8))
-        source_ax.plot(self.t,g)
-        #plt.show()
+
         return g
-    
-"""
-    def GenerateTimeSeries(self):
-        
-        FileName = self.sourceFile # + "series"
-        
-        g = TimeSeries(FileName)
-        
-        source_scale = 1/1173670.5408281302 #1/mm³
-        
-        Q = FunctionSpace(self.mesh,"CG",1)
-        time_period = 1.0
-        data = np.loadtxt(self.sourceFile, delimiter = ",")
-        t = data[:,0]
-        source = data[:,1]
-        dataInterp = np.interp(self.t,t,source,period = 1.0)
-
-        if self.scaleMean:
-            dataInterp -= np.mean(dataInterp)
-        source_fig, source_ax = pylab.subplots(figsize=(16, 8))
-        source_ax.plot(self.t,dataInterp)
-
-        for j,data in enumerate(dataInterp):
-            source = Constant((float(data))*source_scale) #Uniform source on the domain
-            source = project(source, Q)
-            g.store(source.vector(),self.t[j])
-        return g
-
-"""
-
 
 
 
