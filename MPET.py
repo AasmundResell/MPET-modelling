@@ -14,10 +14,12 @@ from pathlib import Path
 from dolfin import *
 from block import block_mat, block_vec, block_transpose, block_bc,block_assemble
 from block.iterative import *
-from block.algebraic.petsc import AMG
-from mshr import *
+#from block.algebraic.petsc import AMG
+#from mshr import *
 import timeit
 import warnings
+from block.dolfin_util import *
+from block.algebraic.petsc import *
 
 matplotlib.rcParams["lines.linewidth"] = 3
 matplotlib.rcParams["axes.linewidth"] = 3
@@ -214,7 +216,7 @@ class MPET:
         print("Generating UFL expressions\n")
         self.generateUFLexpressions()
         
-        
+        #self.mesh = BoxMesh()
         self.ds = Measure("ds", domain=self.mesh, subdomain_data=self.boundary_markers)
         self.n = FacetNormal(self.mesh)  # normal vector on the boundary
         print(self.n)
@@ -315,8 +317,13 @@ class MPET:
         
         #self.applyPressureBC_BLOCK(Q,p,q)
         #self.applyDisplacementBC(V,v)
-        self.alpha[0] = 1
-        self.alpha[1] = 1
+        self.alpha[0] = Constant(1.0)
+        self.alpha[1] = Constant(1.0)
+        #self.Lambda = Constant(1e5)
+        #self.mu    = Constant(1e5)
+
+        #self.c[0] = Constant(1e-2)
+        #self.K[0] = Constant(0.02)
 
         def a_u(u,v):
             return self.mu * (inner(grad(u), grad(v)) + inner(grad(u), nabla_grad(v))) * dx
@@ -432,7 +439,7 @@ class MPET:
         B0 = assemble(-b0)
 
         ##FLUID_PRESSURES##
-        B0T =assemble(-buT)
+        B0T =assemble(-b0T)
         C = assemble(-c)
         
 
@@ -454,6 +461,7 @@ class MPET:
                         [0,   B0T, C,  0],
                         [LT,  A0,  B0, 0]
                         ])
+
         BB = block_mat([[AMG(IV), 0,       0,       0],
                         [0,       AMG(I0), 0,       0],
                         [0,       0,       AMG(IP), 0],
@@ -462,23 +470,27 @@ class MPET:
 
         """
 
+        [[Au, Bu, Na],
+         [BuT,A0, B0],
+         [Nc,B0T, C],
+         ] = AA
 
-        IV = assemble(au)
-        I0 = assemble(inner(p0, q0)*dx)
-        IP = assemble(-c)
+        IV = AMG(Au,pdes = self.dim)
+        I0 = AMG(assemble(inner(p0, q0)*dx))
+        IP = AMG(C)
         #IX = rigid_motions.identity_matrix(X)
 
-        BB = block_mat([[AMG(IV), 0,       0],
-                        [0,       AMG(I0), 0],
-                        [0,       0,       AMG(IP)],
+        BB = block_mat([[IV, 0,  0],
+                        [0,  I0, 0],
+                        [0,  0,  IP],
                         ]) 
 
 
         x0 =  AA.create_vec() #Initial guess       
-        U, P0, P1 = x0
+
 
         # Solve, using random initial guess
-        #[as_backend_type(xi).vec().setRandom() for xi in x0]
+        [as_backend_type(xi).vec().setRandom() for xi in x0]
     
      
         t = 0.0
@@ -487,20 +499,20 @@ class MPET:
         
         ppv = Expression("A*(1-cos(2*pi*t))",degree=3,t=t,A=2000.0)
 
-        #ps = Constant(0)
-        #pv = Constant(0)
-        
-        rhs_bc = block_bc([self.bcs_D, None,None], False)
-        #rhs_bc = block_bc([DirichletBC(V, Constant((0,0,0)),self.boundary_markers,1), None,None], False)
+
+        #ud = Expression(("A*(1-cos(2*pi*t))","0.0","0.0"),degree=3,t=t,A=2000.0)
+        #rhs_bc = block_bc([self.bcs_D, None,None], False)
+
+        rhs_bc = block_bc([DirichletBC(V, Constant((0,0,0)),self.boundary_markers,1), None,DirichletBC(Q1, Constant((0.0)),self.boundary_markers,1)], False)
         rhs_bc.apply(AA)
 
-
         BBu = assemble(inner(Constant((0,0,0)), v)*dx)
-        #BBu = assemble(inner(-self.n*pv, v)*ds) #Pressure on surface is negative (compression)
+        #BBu = assemble(inner(-self.n*pv, v)*self.ds(2)) #Pressure on surface is negative (compression)
         BB0 = assemble(inner(Constant(0), q0)*dx)
-        BBC = assemble( -d10_prev - d11_prev- self.dt*f(g_1, q1) - self.dt* dot(ppv, q1) * ds)
+        BBC = assemble( -d10_prev - d11_prev- self.dt*f(g_1, q1))# - self.dt* dot(ppv, q1) * ds)
         
-        bb = block_assemble([BBu,BB0,BBC])
+        bb = block_vec([BBu,BB0,BBC])
+        rhs_bc.apply(AA).apply(bb)
 
         r1 = bb - AA*x0
         y = BB*r1
@@ -517,8 +529,16 @@ class MPET:
             print('Preconditioner is positive-definite')
 
         #Define solver type
-        AAinv = MinRes(AA, precond=BB, initial_guess=x0, maxiter=120, tolerance=1E-8,
-                   show=2, relativeconv=True)
+        AAinv = MinRes(AA,
+                       precond=BB,
+                       #initial_guess=x0,
+                       maxiter=2000,
+                       tolerance=1E-8,
+                       show=3,
+                       relativeconv=False,
+                       )
+
+
 
         tvec = np.arange(0,self.T,self.dt)
         DV_Vec = np.zeros(len(tvec))
@@ -534,10 +554,11 @@ class MPET:
         i=0
 
         while t < self.T:
-            #BBu = assemble(inner(-self.n*pv, v)*ds) #Pressure on surface is negative (compression)
-            #BB0 = assemble(inner(Constant(0), q)*dx)
+            BBu = assemble(inner(Constant((0,0,0)), v)*dx)
+            #BBu = assemble(inner(-self.n*pv, v)*self.ds(2)) #Pressure on surface is negative (compression)
             BBC = assemble(-d10_prev - d11_prev - self.dt*inner(g_1, q1)*dx)
-            bb = block_assemble([BBu,BB0,BBC])
+            bb = block_vec([BBu,BB0,BBC])
+            rhs_bc.apply(AA)
             rhs_bc.apply(AA).apply(bb)
             
 
@@ -557,16 +578,15 @@ class MPET:
             xdmfP0.write(p0, t)
             xdmfP[0].write(p1, t)
             t +=float(self.dt)
-            pv.t = t
-            ppv.t = t
-
+            #pv.t = t
+            #ppv.t = t
+           # ud.t = t
 
             g_1.vector()[:] = self.g[0][i+1]
-            print(g_1.vector()[:])
-
-            u_prev.vector()[:] = U[:]
-            p0_prev.vector()[:] = P0[:]
-            p1_prev.vector()[:] = P1[:]
+            
+            u_prev.vector()[:] = U
+            p0_prev.vector()[:] = P0
+            p1_prev.vector()[:] = P1
 
             self.m = assemble(g_1*dx(self.mesh))
             print("Arterial inflow:",self.m)
