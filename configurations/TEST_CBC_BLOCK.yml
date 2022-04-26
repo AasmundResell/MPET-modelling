@@ -2,8 +2,8 @@
 
 solver_settings:
   log_level : 20
-  T : 8.0
-  num_T_steps : 200
+  T : 2.0
+  num_T_steps : 50
   num_networks : 1
   num_boundaries : 2
   element_type : CG

@@ -11,15 +11,20 @@ import matplotlib
 import pandas
 import glob
 from pathlib import Path
-from dolfin import *
 from block import block_mat, block_vec, block_transpose, block_bc,block_assemble
-from block.iterative import *
-#from block.algebraic.petsc import AMG
-#from mshr import *
-import timeit
+#from block.iterative import *
+from block.algebraic.petsc import AMG
+
 import warnings
 from block.dolfin_util import *
-from block.algebraic.petsc import *
+
+import petsc4py, sys
+petsc4py.init(sys.argv)
+
+from petsc4py import PETSc
+from dolfin import *
+print = PETSc.Sys.Print
+
 
 matplotlib.rcParams["lines.linewidth"] = 3
 matplotlib.rcParams["axes.linewidth"] = 3
@@ -29,9 +34,6 @@ matplotlib.rcParams["xtick.labelsize"] = "xx-large"
 matplotlib.rcParams["ytick.labelsize"] = "xx-large"
 matplotlib.rcParams["legend.fontsize"] = "xx-large"
 matplotlib.rcParams["font.size"] = 14
-
-
-
 
 class MPET:
     def __init__(self,
@@ -132,7 +134,16 @@ class MPET:
         self.p_BC_initial = [kwargs.get("p_ven_initial"),kwargs.get("p_sas_initial")]
         self.p_BC_initial.append(kwargs.get("p_spine_initial"))
 
+        print("\nSetting up problem...\n")
 
+        print("Generating UFL expressions\n")
+        self.generateUFLexpressions()
+        
+        self.ds = Measure("ds", domain=self.mesh, subdomain_data=self.boundary_markers)
+        self.n = FacetNormal(self.mesh)  # normal vector on the boundary
+        self.dt = self.T / self.numTsteps
+
+        
     def AMG_testing(self):
         """ Used for testing the settings of the AMG preconditions on a simplified
         linear elasticity problem
@@ -151,77 +162,241 @@ class MPET:
         """
 
         progress = Progress("Time-stepping", self.numTsteps)
+        N = 20
+        self.mesh = BoxMesh(Point(1, 1, 1), Point(2, 1.5, 1.25), N, N, N)
+
+        t = 0.0
+        #self.f = Expression(('(1-cos(2*pi*t))*A*sin(2*x[0]*100/5)', '(1-cos(2*pi*t)*A*cos(3*100*(x[0]+x[1]+x[2])/5)', '(1-cos(2*pi*t)*A*sin(100*x[2]/5)'), degree=3, A=0.01,t = t)
         
-        # For cube
+        self.f = Expression(('A*sin(2*x[0]/5)', 'A*cos(3*(x[0]+x[1]+x[2])/5)', 'A*sin(x[2]/5)'), degree=3, A=0.01)
+    
+        h = Constant((0, 0, 0))
+        self.mu = 1.0
+        self.Lambda = 1E3
+        self.alpha[1] = 1
+        self.c[0] = Constant(1e-2)
+        self.K[0] = Constant(0.02)
+
+        generateExact = True #Generating exact solution
+        #self.CreateForceTerm(generateExact) #Generates f
+
         V = VectorFunctionSpace(self.mesh, 'CG', 2)
-        Q = FunctionSpace(self.mesh, 'CG', 1)
-        
-        
+        Q0 = FunctionSpace(self.mesh, 'CG', 1)
+        Q1 = FunctionSpace(self.mesh, 'CG', 1)
         
         u, v = TrialFunction(V), TestFunction(V)
-        p0, q0 = TrialFunction(Q), TestFunction(Q)
+        p0, q0 = TrialFunction(Q0), TestFunction(Q0)
+        p1, q1 = TrialFunction(Q1), TestFunction(Q1)
         
+        a = 2*self.mu*inner(sym(grad(u)), sym(grad(v)))*dx
         
-        # Strain
-        epsilon = lambda u: sym(grad(u))
-        # Stress
-        gdim = self.mesh.geometry().dim()
-
-        #a = inner(sym(grad(u)), sym(grad(v)))*dx
-        a = self.mu * (inner(grad(u), grad(v)) + inner(grad(u), nabla_grad(v))) * dx
         A = assemble(a)
         
+        c = inner(div(v), p0)*dx
+        C = assemble(c)
+        
+        d = -(inner(p0, q0)/Constant(self.Lambda))*dx
+        D = assemble(d)
+
+        e = -self.alpha[1]*(inner(p1, q0)/Constant(self.Lambda))*dx
+        E = assemble(e)
+
+        f1 = -(self.c[0]+self.alpha[1]**2/Constant(self.Lambda))*inner(p1,q1)*dx
+        f2 = self.K[0] * dot(grad(p1), grad(q1)) * dx
+        
+        F = assemble(f1+f2)
 
         
+        m = inner(u, v)*dx
 
-        f = Expression(('A*sin(2*x[0])', 'A*cos(3*(x[0]+x[1]+x[2]))', 'A*sin(x[2])'),
-                       degree=3, A=0.01)
-        h = Constant((0, 10, 20))
+        AA = block_assemble([[A,                  C,                  0], 
+                             [block_transpose(C), D,                  E],
+                             [0,                  block_transpose(E), F],
+                             ])
+        
+        # Right hand side
+        L = inner(self.f, v)*dx + inner(h, v)*ds
+        
 
-        L = inner(f, v)*dx + inner(h, v)*ds
+        b0 = assemble(L)
+        b1 = assemble(inner(Constant(0), q0)*dx)
+        b2 = assemble(inner(Constant(0), q1)*dx)
 
-        b = assemble(L)
+        boundary = BoxBoundary(self.mesh)
 
-        IV = assemble(a)
-        B = AMG(IV)
+        rhs_bc = block_bc([[DirichletBC(V,Constant((0,0,0)),boundary.bottom)],None,None],False)
+        #rhs_bc = block_bc([[DirichletBC(V,Constant((0,0,0)),self.boundary_markers,1)],None,None],False)
+        rhs_bc.apply(AA)
 
+        # Block diagonal preconditioner
+        dummy_rhs = inner(Constant((0, )*len(v)), v)*dx
+        IV, _ = assemble_system(a+m, dummy_rhs, bcs=rhs_bc[0])
+        IQ = assemble(inner(p0, q0)*dx)
+        IM = assemble(f1+f2)
+        
+        BB = block_mat([[AMG(IV), 0,            0],
+                        [0,       AMG(IQ),      0],
+                        [0,       0,            AMG(IM)],
+                        ])
+        
         # Solve, using random initial guess
-        x0 = A.create_vec()
-        #[as_backend_type(xi).setRandom() for xi in x0]
+        x0 = AA.create_vec()
+        [as_backend_type(xi).vec().setRandom() for xi in x0]
+        
+        AAinv = MinRes2(AA,
+                       precond=BB,
+                       initial_guess=x0,
+                      # iter = 2000,
+                       maxiter=200,
+                       tolerance=1E-8,
+                       show=3,
+                       relativeconv=True)
 
         xdmfU = XDMFFile(self.filesave + "/FEM_results/U.xdmf")
         xdmfU.parameters["flush_output"]=True
+        xdmfP0 = XDMFFile(self.filesave + "/FEM_results/P0.xdmf")
+        xdmfP0.parameters["flush_output"]=True
+        xdmfP1 = XDMFFile(self.filesave + "/FEM_results/P1.xdmf")
+        xdmfP1.parameters["flush_output"]=True
+
         x = None
-        Ainv = MinRes(A,precond=B,tolerance=1e-3, initial_guess=x0,maxiter=200, show=3)
 
-        t = 0
-        start = timeit.timeit()
-        print("Timeit started")
-        x = Ainv*b
-        end = timeit.timeit()
-        print("Elaspsed time: ",end - start)
+        
+        u = Function(V)
+        p0 = Function(Q0)
+        p1 = Function(Q1)
+        
+        
+        #while t < self.T:
+        bb = block_vec([b0, b1, b2])
+        rhs_bc.apply(AA).apply(bb)
 
-        u = Function(V,x)
+        x = AAinv*bb
+
+        U,P0,P1 = x
+
+        u.vector()[:] = U[:]
+        p0.vector()[:] = P0[:]
+        p1.vector()[:] = P1[:]
+
         xdmfU.write(u, t)
+        xdmfP0.write(p0, t)
+        xdmfP1.write(p1, t)
 
+        t += self.dt
+        #self.f.t = t
+        
+        progress +=1
 
+    def CreateForceTerm(self,generateExact = False):
+
+        import sympy as sym
+
+        x, y, z = sym.symbols("x[0], x[1], x[2]")
+        mu = self.mu
+        Lambda = self.Lambda
+
+        t = sym.symbols("t")
+        u =  (
+        sym.sin(2 * sym.pi * y /100) * (-1 + sym.cos(2 * sym.pi * x/100))
+        + 1 / (mu + Lambda) * sym.sin(sym.pi * x/100) * sym.sin(sym.pi * y/100)
+        )
+        v = (
+            sym.sin(2 * sym.pi * x) * (1 - sym.cos(2 * sym.pi * y))
+            + 1 / (mu + Lambda) * sym.sin(sym.pi * x) * sym.sin(sym.pi * y)
+        )
+        w = 0
+        p = Lambda * (sym.diff(u, x, 1) + sym.diff(v, y, 1) + sym.diff(w, z, 1))
+
+        epsilonxx = sym.diff(u, x, 1)
+        epsilonyy = sym.diff(v, y, 1)
+        epsilonzz = sym.diff(w, z, 1)
+
+        epsilonxy = 1 / 2 * (sym.diff(u, y, 1) + sym.diff(v, x, 1))
+        epsilonyz = 1 / 2 * (sym.diff(v, z, 1) + sym.diff(w, y, 1))
+        epsilonzx = 1 / 2 * (sym.diff(w, x, 1) + sym.diff(u, z, 1))
+
+        fx = 2 * mu * (sym.diff(epsilonxx, x, 1) + sym.diff(epsilonxy, y, 1)+ sym.diff(epsilonzx, z, 1)) - sym.diff(
+            p, x, 1
+        )  # calculate force term x
+        fy = 2 * mu * (sym.diff(epsilonxy, x, 1) + sym.diff(epsilonyy, y, 1) + sym.diff(epsilonyz, z, 1)) - sym.diff(
+            p, y, 1
+        )  # calculate force term y
+        fz = 2 * mu * (sym.diff(epsilonzx, x, 1) + sym.diff(epsilonyz, y, 1) + sym.diff(epsilonzz, z, 1)) - sym.diff(
+            p, z, 1
+        )  # calculate force term z
+        
+        variables = [
+            u,
+            v,
+            w,
+            p,
+            mu,
+            Lambda,
+            fx,
+            fy,
+            fz,
+        ]
+        
+        variables = [sym.printing.ccode(var) for var in variables]  # Generate C++ code
+        
+        UFLvariables = [Expression(var, degree=2, t=0) for var in variables]
+
+        self.f = Expression((variables[-3],variables[-2],variables[-1]), degree=3, t=0)
+        
+        (
+            u,
+            v,
+            w,
+            p,
+            mu,
+            Lambda,
+            fx,
+            fy,
+            fz,
+        ) = UFLvariables
+
+        
+        U = as_vector((u, v, w))
+        #p_initial = [p0,p1,p2]
+        if generateExact:
+            xdmfUE = XDMFFile(self.filesave + "/FEM_results/UE.xdmf")
+            xdmfUE.parameters["flush_output"]=True
+            xdmfPE = XDMFFile(self.filesave + "/FEM_results/PE.xdmf")
+            xdmfPE.parameters["flush_output"]=True
+            t = 0.0
+            V_e = VectorFunctionSpace(self.mesh, "CG", 2)
+            Q_e = FunctionSpace(self.mesh, "CG", 1)
+            
+            u_e = Expression((variables[0], variables[1],variables[2]), degree=2, t=t)
+            p_e = Expression(variables[3], degree=2, t=t)
+            
+            u_es = Function(V_e)
+            p_es = Function(Q_e)
+            
+            #while t < self.T:
+            print("t: ",t)
+            u_es.vector()[:] = project(u_e, V_e).vector()[:]
+            p_es.vector()[:] = project(p_e, Q_e).vector()[:]
+            
+            xdmfUE.write(u_es, t)
+            xdmfPE.write(p_es, t)
+            t += self.dt
+            u_e.t = t
+            p_e.t = t
+
+ 
+        
     def blockSolve(self):
             
         """
         Solves the MPET problem as a block system
         """
 
-        print("\nSetting up problem...\n")
+        N = 20
+        self.mesh = BoxMesh(Point(1, 1, 1), Point(2, 1.5, 1.25), N, N, N)
 
-        print("Generating UFL expressions\n")
-        self.generateUFLexpressions()
         
-        #self.mesh = BoxMesh()
-        self.ds = Measure("ds", domain=self.mesh, subdomain_data=self.boundary_markers)
-        self.n = FacetNormal(self.mesh)  # normal vector on the boundary
-        print(self.n)
-        self.dt = self.T / self.numTsteps
-
         # Add progress bar
         progress = Progress("Time-stepping", self.numTsteps)
         set_log_level(LogLevel.PROGRESS)
@@ -229,16 +404,13 @@ class MPET:
         xdmfU = XDMFFile(self.filesave + "/FEM_results/u.xdmf")
         xdmfU.parameters["flush_output"]=True
 
-        xdmfP0 = XDMFFile(self.filesave + "/FEM_results/p0.xdmf")
-        xdmfP0.parameters["flush_output"]=True
-
         xdmfP = []
-        mpi_comm = MPI.comm_world
-
-        for i in range(self.numPnetworks):
-            xdmfP.append(XDMFFile(self.filesave + "/FEM_results/p" + str(i+1) + ".xdmf"))        
+        
+        for i in range(self.numPnetworks+1):
+            xdmfP.append(XDMFFile(self.filesave + "/FEM_results/p" + str(i) + ".xdmf"))        
             xdmfP[i].parameters["flush_output"]=True
 
+        """
         #f for float value, not dolfin expression
         p_VEN_f = self.p_BC_initial[0]
         p_SAS_f = self.p_BC_initial[1]
@@ -289,26 +461,154 @@ class MPET:
         self.integrals_R_L = []
         # Contains the integrals for the Robin boundaries, RHS
         self.integrals_R_R = []
-
-        V = VectorFunctionSpace(self.mesh,'CG', degree=2,dim=self.dim)
-        Q0 = FunctionSpace(self.mesh, 'CG' ,1)
-        Q1 = FunctionSpace(self.mesh, 'CG' ,1)
+        """
         
+        h = Constant((0, 0, 0))
+        self.mu = 1.0
+        self.Lambda = 1E3
+        self.alpha[1] = 1
+        self.c[0] = Constant(1e-2)
+        self.K[0] = Constant(0.02)
 
-        print("dim V element:",V.element().space_dimension())
-        print("dim Q element:",Q0.element().space_dimension()) 
+        generateExact = True #Generating exact solution
+        #self.CreateForceTerm(generateExact) #Generates f
+
+        # For cube
+        V = VectorFunctionSpace(self.mesh, 'CG', 2)
+        Q = FunctionSpace(self.mesh, 'CG', 1)
+
 
         u, v = TrialFunction(V), TestFunction(V)
-        p0, q0 = TrialFunction(Q0), TestFunction(Q0)
-        p1, q1 = TrialFunction(Q1), TestFunction(Q1)
+        p, q = TrialFunction(Q), TestFunction(Q)
 
-        u_prev = Function(V)
-        p0_prev = Function(Q0)
-        p1_prev = Function(Q1)
-        #p2_prev = Function(Q)
-        #p3_prev = Function(Q)
+
+        a = 2*self.mu*inner(sym(grad(u)), sym(grad(v)))*dx
+        
+        A = assemble(a)
+        
+        c = inner(div(v), p)*dx
+        C = assemble(c)
+        
+        d = -(inner(p, q)/Constant(self.Lambda))*dx
+        D = assemble(d)
+
+        e = -self.alpha[1]*(inner(p, q)/Constant(self.Lambda))*dx
+        E = assemble(e)
+
+        f1 = -(self.c[0]+self.alpha[1]**2/Constant(self.Lambda))*inner(p,q)*dx
+        f2 = self.K[0] * dot(grad(p), grad(q)) * dx
+        
+        F = assemble(f1+f2)
+
+        m = inner(u, v)*dx
+        M = assemble(m)
+
+        dimZ = 6
+
+
+        X = VectorFunctionSpace(self.mesh, 'R', 0, dim=6)
+        Z = None
+
+        Zh = rigid_motions.rm_basis(self.mesh)
 
         
+        z,r = TrialFunction(X),TestFunction(X)
+
+        B = sum(z[i]*inner(v, Zh[i])*dx() for i in range(dimZ)) 
+        BT = sum(r[i]*inner(u, Zh[i])*dx() for i in range(dimZ))
+
+        # System operator
+        AA = block_assemble([[A,                  C,                  0, B], 
+                             [block_transpose(C), D,                  E, 0],
+                             [0,                  block_transpose(E), F, 0],
+                             [BT,                 0,                  0, 0],
+                             ])
+        
+        # Right hand side
+        rhs_bc = block_bc([None,None,[DirichletBC(Q,Constant(0),boundary.bottom)]],False)
+        rhs_bc.apply(AA)
+
+        print("Len v:",len(v))
+
+        # Block diagonal preconditioner
+        IV = assemble(a+m)
+        IQ = assemble(inner(p, q)*dx)
+        dummy_rhs = inner(Constant((0, )*len(q)), q)*dx
+        IM, _ = assemble_system(f1+f2, dummy_rhs, bcs=rhs_bc[2])
+        IX = rigid_motions.identity_matrix(X)
+
+        BB = block_mat([[AMG(IV), 0,           0,         0],
+                        [0,       AMG(IQ),     0,         0],
+                        [0,       0,           AMG(IM),   0],
+                        [0,       0,           0,         IX],
+                        ])
+
+
+        self.f = Expression(('A*sin(2*x[0]/5)', 'A*cos(3*(x[0]+x[1]+x[2])/5)', 'A*sin(x[2]/5)'), degree=3, A=0.01)
+        h = Constant((0, 0, 0))
+        
+        L = inner(self.f, v)*dx + inner(h, v)*ds
+        
+        b0 = assemble(L)
+        b1 = assemble(inner(Constant(0), q)*dx)
+        # Equivalent to assemble(inner(Constant((0, )*6), q)*dx) but cheaper
+        b2 = assemble(inner(Constant(0), q)*dx)
+        b3 = Function(X).vector()
+        # Solve, using random initial guess
+        x0 = AA.create_vec()
+        [as_backend_type(xi).vec().setRandom() for xi in x0]
+        
+        AAinv = MinRes2(AA,
+                        precond=BB,
+                        initial_guess=x0,
+                        #iter = 2000,
+                        maxiter=200,
+                        tolerance=1E-8,
+                        show=3,
+                        relativeconv=True)
+
+        x = None
+
+        t=0.0
+
+        u_v = Function(V)
+        p0_v = Function(Q)
+        p1_v = Function(Q)
+        
+        
+        #while t < self.T:
+        bb = block_vec([b0, b1, b2, b3])
+
+        r1 = bb - AA*x0
+        y = BB*r1
+        beta1 = block_vec.inner(r1,y)
+        
+        
+        #  Test for an indefinite preconditioner.
+        #  If b = 0 exactly, stop with x = 0.
+        if beta1 < 0:
+            raise ValueError('Preconditioner is negative-definite')
+        if beta1 == 0:
+            warnings.warn("Preconditioner vec-mat-vec product is zero")
+        else:
+            print('Preconditioner is positive-definite')
+
+
+        x = AAinv*bb
+
+        U,P0,P1,nu = x
+
+        u_v.vector()[:] = U[:]
+        p0_v.vector()[:] = P0[:]
+        p1_v.vector()[:] = P1[:]
+
+        xdmfU.write(u_v, t)
+        xdmfP[0].write(p0_v, t)
+        xdmfP[1].write(p1_v, t)
+
+        t += self.dt
+        #self.f.t = t
+        """
         #Apply initial conditions
         #p0_prev.vector()[:] = self.p_initial[0]
         #p1_prev.vector()[:] = self.p_initial[1]
@@ -316,14 +616,11 @@ class MPET:
         #p3_prev.vector()[:] = self.p_initial[3]
         
         #self.applyPressureBC_BLOCK(Q,p,q)
-        #self.applyDisplacementBC(V,v)
+        self.applyDisplacementBC(V,v)
         self.alpha[0] = Constant(1.0)
         self.alpha[1] = Constant(1.0)
-        #self.Lambda = Constant(1e5)
-        #self.mu    = Constant(1e5)
-
-        #self.c[0] = Constant(1e-2)
-        #self.K[0] = Constant(0.02)
+        self.Lambda = Constant(1e5)
+        self.mu    = Constant(1e5)
 
         def a_u(u,v):
             return self.mu * (inner(grad(u), grad(v)) + inner(grad(u), nabla_grad(v))) * dx
@@ -400,15 +697,6 @@ class MPET:
 
         ##BLOCK_SYSTEM##
 
-        """
-        P*[Au  Bu  0  0  0  L; *[u,  = P*[F_u,
-           Bu' A0  B1 B2 B3 0;   p0, =    0,
-           0   C0  A1 C2 C3 0;   p1, =    G1 + Ct,
-           0   D0  D1 A2 D3 0;   p2, =    Dt,
-           0   E0  E1 E2 A3 0;   p3, =    R3 + Et,
-           L'  0   0  0  0  0]   z]  =    0]
-        
-        """
         ##BLOCK_MATRIX##
 
         ##MOMENTUM_AND_RIGID_MOTION##
@@ -424,7 +712,7 @@ class MPET:
         b0T = b_0(self.alpha[1],p0,q1)
 
         d11 = (self.c[0]+self.alpha[1]**2 / self.Lambda)*p1*q1*dx
-        c = d11 - a_p(self.K[0],p1,q1)
+        c = d11 + self.dt*a_p(self.K[0],p1,q1)
 
         d10_prev = self.alpha[1]*self.alpha[0] / self.Lambda*p0_prev*q1*dx
         d11_prev = (self.c[0]+self.alpha[1]**2 / self.Lambda)*p1_prev*q1*dx
@@ -443,41 +731,27 @@ class MPET:
         C = assemble(-c)
         
 
-        ##MATRIX_ASSEMBLY##
-        AA = block_mat([[Au,  Bu,  0],
-                        [BuT, A0,  B0],
-                        [0,   B0T, C],
-                        ])
-        """
-        # NOTE: Avoiding use of Q space in the assembly - dense blocks!
-        X = VectorFunctionSpace(self.mesh, 'R', 0, dim=6)
-        Zh = rigid_motions.RMBasis(V, X, Z)  # L^2 orthogonal
-        L = M*Zh
-        LT = Zh*Z
+        pv = Expression("A*(1-cos(2*pi*t))",degree=3,t=t,A=200.0)
+        ppv = Expression("A*(1-cos(2*pi*t))",degree=3,t=t,A=2000.0)
+        ud = Expression(("A*(1-cos(2*pi*t))","0.0","0.0"),degree=3,t=t,A=2000.0)
 
-        ##MATRIX_ASSEMBLY_TEST##
-        AA = block_mat([[Au,  Bu,  0,   L],
-                        [BuT, A0,  B0, 0],
-                        [0,   B0T, C,  0],
-                        [LT,  A0,  B0, 0]
-                        ])
 
-        BB = block_mat([[AMG(IV), 0,       0,       0],
-                        [0,       AMG(I0), 0,       0],
-                        [0,       0,       AMG(IP), 0],
-                        [0,       0,       0,       AMG(IX)],
-                        ]) 
+        #rhs_bc = block_bc([self.bcs_D, None,None], False)
 
-        """
+        rhs_bc = block_bc([DirichletBC(V, Constant((0,0,0)),self.boundary_markers,1), None,DirichletBC(Q1, Constant((0.0)),self.boundary_markers,1)], False)
+
+        rhs_bc.apply(AA)
 
         [[Au, Bu, Na],
          [BuT,A0, B0],
          [Nc,B0T, C],
          ] = AA
 
-        IV = AMG(Au,pdes = self.dim)
+        IV = AMG(Au)
         I0 = AMG(assemble(inner(p0, q0)*dx))
+
         IP = AMG(C)
+
         #IX = rigid_motions.identity_matrix(X)
 
         BB = block_mat([[IV, 0,  0],
@@ -491,25 +765,11 @@ class MPET:
 
         # Solve, using random initial guess
         [as_backend_type(xi).vec().setRandom() for xi in x0]
-    
-     
-        t = 0.0
-        #ps = Expression("A*(1-cos(2*pi*t))",degree=3,t=t,A=0.1)
-        pv = Expression("A*(1-cos(2*pi*t))",degree=3,t=t,A=200.0)
-        
-        ppv = Expression("A*(1-cos(2*pi*t))",degree=3,t=t,A=2000.0)
-
-
-        #ud = Expression(("A*(1-cos(2*pi*t))","0.0","0.0"),degree=3,t=t,A=2000.0)
-        #rhs_bc = block_bc([self.bcs_D, None,None], False)
-
-        rhs_bc = block_bc([DirichletBC(V, Constant((0,0,0)),self.boundary_markers,1), None,DirichletBC(Q1, Constant((0.0)),self.boundary_markers,1)], False)
-        rhs_bc.apply(AA)
-
-        BBu = assemble(inner(Constant((0,0,0)), v)*dx)
         #BBu = assemble(inner(-self.n*pv, v)*self.ds(2)) #Pressure on surface is negative (compression)
+     
+        BBu = assemble(inner(Constant((0,0,0)), v)*dx)
         BB0 = assemble(inner(Constant(0), q0)*dx)
-        BBC = assemble( -d10_prev - d11_prev- self.dt*f(g_1, q1))# - self.dt* dot(ppv, q1) * ds)
+        BBC = assemble(- d10_prev - d11_prev - self.dt*f(g_1, q1))# - self.dt* dot(ppv, q1) * ds)
         
         bb = block_vec([BBu,BB0,BBC])
         rhs_bc.apply(AA).apply(bb)
@@ -531,11 +791,11 @@ class MPET:
         #Define solver type
         AAinv = MinRes(AA,
                        precond=BB,
-                       #initial_guess=x0,
-                       maxiter=2000,
+                       initial_guess=x0,
+                       maxiter=200,
                        tolerance=1E-8,
-                       show=3,
-                       relativeconv=False,
+                       show=2,
+                       relativeconv=True,
                        )
 
 
@@ -553,20 +813,22 @@ class MPET:
         x = None
         i=0
 
+        #BBu = assemble(inner(-self.n*pv, v)*self.ds(2)) #Pressure on surface is negative (compression)
         while t < self.T:
-            BBu = assemble(inner(Constant((0,0,0)), v)*dx)
-            #BBu = assemble(inner(-self.n*pv, v)*self.ds(2)) #Pressure on surface is negative (compression)
+
+            #BBu = assemble(inner(Constant((0,0,0)), v)*dx)
+            #BB0 = assemble(inner(Constant(0), q0)*dx)
             BBC = assemble(-d10_prev - d11_prev - self.dt*inner(g_1, q1)*dx)
+
             bb = block_vec([BBu,BB0,BBC])
-            rhs_bc.apply(AA)
             rhs_bc.apply(AA).apply(bb)
-            
 
             start = timeit.timeit()
             print("Timeit started")
             x = AAinv * bb
             end = timeit.timeit()
             print("Elaspsed time: ",end - start)
+
             U,P0,P1 = x
             u.vector()[:] = U[:]
             p0.vector()[:] = P0[:]
@@ -578,9 +840,9 @@ class MPET:
             xdmfP0.write(p0, t)
             xdmfP[0].write(p1, t)
             t +=float(self.dt)
-            #pv.t = t
-            #ppv.t = t
-           # ud.t = t
+            pv.t = t
+            ppv.t = t
+            ud.t = t
 
             g_1.vector()[:] = self.g[0][i+1]
             
@@ -599,6 +861,7 @@ class MPET:
             i +=1
             
 
+        """
 
 
         
@@ -1837,12 +2100,12 @@ class MPET:
         variables = [sym.printing.ccode(var) for var in variables]  # Generate C++ code
 
         UFLvariables = [
-            Expression(var, degree=2, t=0.0 ) for var in variables
+            Expression(var, degree=0, t=0.0 ) for var in variables
         ]  # Generate ufl varibles
  
 
         (
-            self.my_UFL,
+            self.mu_UFL,
             self.Lambda_UFL,
             fx_UFL,
             fy_UFL,
@@ -1874,7 +2137,7 @@ class MPET:
             variables = [sym.printing.ccode(var) for var in variables]  # Generate C++ code
 
             UFLvariables = [
-                Expression(var, degree=1, t=0.0 ) for var in variables
+                Expression(var, degree=0, t=0.0 ) for var in variables
             ]  # Generate ufl varibles
             
             (
@@ -1904,6 +2167,8 @@ class MPET:
         print("\n DOMAIN PARAMETERS\n")
         print(tabulate([['Young Modulus', self.E, 'Pa'],
                         ['nu', self.nu, "--"],
+                        ['lambda', self.Lambda, 'Pa'],
+                        ['mu', self.mu, 'Pa'],
                         ['rho', self.rho, "kg/m³"],
                         ['c', self.c_val, "1/Pa"],
                         ['kappa', self.kappa, 'mm^2'],
@@ -1996,3 +2261,122 @@ class MPET:
 
 
 
+    def get_system(self,n):
+        '''MPET biot with 3 networks. Return system to be solved with PETSc'''
+        # For simplicity we consider a stationary problem and displacement
+        # and network pressures are fixed to 0 on the entire boundary
+        mesh = UnitCubeMesh(n, n, n)
+        cell = mesh.ufl_cell()
+        
+        Velm = VectorElement('Lagrange', cell, 2)
+        Qi_elm = FiniteElement('Lagrange', cell, 1)  # For one pressure
+        Qelm = MixedElement([Qi_elm]*4)
+        Welm = MixedElement([Velm, Qelm]) 
+        
+        W = FunctionSpace(mesh, Welm)
+        u, p = TrialFunctions(W)
+        v, q = TestFunctions(W)
+        
+        print(W.dim(), "<<<<<", mesh.num_entities_global(mesh.topology().dim()))
+        
+        bcs = [DirichletBC(W.sub(0), Constant((0, )*len(u)), 'on_boundary')]
+        # Add the network ones
+        bcs.extend([DirichletBC(W.sub(1).sub(net), Constant(0), 'on_boundary')
+                    for net in range(1, 4)])
+        
+        mu, lmbda = Constant(self.mu), Constant(self.Lambda)
+        alphas = Constant((self.alpha_val[0], self.alpha_val[1],self.alpha_val[2]))
+        cs = Constant((self.c_val[0], self.c_val[1], self.c_val[2]))
+        Ks = Constant((self.K_val[0], self.K_val[1], self.K_val[2]))
+        
+        # Exchange matrix; NOTE: I am not sure about the sign here
+        Ts = Constant(((0, self.gamma[0,1], self.gamma[0,2]),
+                       (self.gamma[1,0], 0, self.gamma[1,2]),
+                       (self.gamma[2,0], self.gamma[2,1], 0)))
+
+        # The first of the pressure is the total pressure, the rest ones
+        # are networks
+        pT, *ps = split(p)
+        qT, *qs = split(q)
+
+        nnets = len(ps)
+        print("Number of networks:",nnets)
+        
+        a = (inner(2*mu*sym(grad(u)), sym(grad(v)))*dx + inner(pT, div(v))*dx
+             + inner(qT, div(u))*dx
+             - (1/lmbda)*inner(pT, qT)*dx
+             - (1/lmbda)*sum(inner(alphas[i]*ps[i], qT)*dx for i in range(nnets)))
+
+        # Add the eq tested with networks
+        for j in range(nnets):
+            a = a - (1/lmbda)*inner(alphas[j]*qs[j], pT)*dx
+            # The diagonal part
+            a = a - (inner(cs[j]*ps[j], qs[j])*dx +
+                     inner(Ks[j]*grad(ps[j]), grad(qs[j]))*dx +
+                     (1/lmbda)*sum(inner(alphas[i]*ps[i], qs[j])*dx for i in range(nnets)) +
+                    sum(inner(Ts[j, i]*(ps[j] - ps[i]), qs[j])*dx for i in range(nnets) if i != j))
+
+        # Now the preconditioner operator
+        a_prec = (inner(2*mu*sym(grad(u)), sym(grad(v)))*dx
+                  + (1/lmbda + 1/(2*mu))*inner(pT, qT)*dx)
+        # Add the eq tested with networks
+        for j in range(nnets):
+            a_prec =  a_prec + (1/lmbda)*inner(alphas[j]*qs[j], pT)*dx
+            # The diagonal part
+            a_prec = a_prec + (inner(cs[j]*ps[j], qs[j])*dx +
+                               inner(Ks[j]*grad(ps[j]), grad(qs[j]))*dx +
+                               (1/lmbda)*sum(inner(alphas[i]*ps[i], qs[j])*dx for i in range(nnets)) +
+                               sum(inner(Ts[j, i]*(ps[j] - ps[i]), qs[j])*dx for i in range(nnets) if i != j))
+
+        r = SpatialCoordinate(mesh)
+        # Soma fake rhs
+        L = inner(r, v)*dx
+            
+        B, _ = assemble_system(a_prec, L, bcs)
+        A, b = assemble_system(a, L, bcs)
+
+        return A, b, W, B
+
+
+
+    def SolvePETSC(self):
+        A, b, W, B = get_system(32)
+    
+        solver = PETScKrylovSolver()
+        solver.parameters['error_on_nonconvergence'] = False
+        ksp = solver.ksp()
+        
+        solver.set_operators(A, B)
+        OptDB = PETSc.Options()    
+        OptDB.setValue('ksp_type', 'minres')
+        OptDB.setValue('pc_type', 'fieldsplit')
+        OptDB.setValue('pc_fieldsplit_type', 'additive')  # schur
+        OptDB.setValue('pc_fieldsplit_schur_fact_type', 'diag')   # diag,lower,upper,full
+        
+        # Only apply preconditioner
+        OptDB.setValue('fieldsplit_0_ksp_type', 'preonly')
+        OptDB.setValue('fieldsplit_1_ksp_type', 'preonly')
+        # Set the splits
+        pc = ksp.getPC()
+        pc.setType(PETSc.PC.Type.FIELDSPLIT)
+        splits = tuple((str(i), PETSc.IS().createGeneral(W.sub(i).dofmap().dofs()))
+                       for i in range(W.num_sub_spaces()))
+        pc.setFieldSplitIS(*splits)        
+        assert len(splits) == 2
+        
+        OptDB.setValue('fieldsplit_0_pc_type', 'lu')  
+        OptDB.setValue('fieldsplit_1_pc_type', 'hypre')  # AMG in cbc block
+        
+        OptDB.setValue('ksp_norm_type', 'preconditioned')
+        # Some generics
+        OptDB.setValue('ksp_view', None)
+        OptDB.setValue('ksp_monitor_true_residual', None)    
+        OptDB.setValue('ksp_converged_reason', None)
+        # NOTE: minres does not support unpreconditioned
+        OptDB.setValue('ksp_rtol', 1E-10)
+        # Use them!
+        ksp.setFromOptions()
+        
+        wh = Function(W)
+        solver.solve(wh.vector(), b)
+        print(W.dim())

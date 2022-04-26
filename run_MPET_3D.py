@@ -159,8 +159,9 @@ def run_MPET_3D_TestSphere():
     )
     
     Solver3D.printSetup()
-    #Solver3D.AMG_testing()
+   
     Solver3D.blockSolve()
+    #Solver3D.AMG_testing()
     #Solver3D.solve()
     Solver3D.plotResults()
 
@@ -202,5 +203,6 @@ def generateUFL_BCexpressions():
 
 
 if __name__ == "__main__":
-    run_MPET_3D_TestSphere()
     #run_MPET_3D()
+    run_MPET_3D_TestSphere()
+ 
