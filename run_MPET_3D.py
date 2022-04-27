@@ -159,11 +159,11 @@ def run_MPET_3D_TestSphere():
     )
     
     Solver3D.printSetup()
-   
-    Solver3D.blockSolve()
+    Solver3D.SolvePETSC()
+    #Solver3D.blockSolve()
     #Solver3D.AMG_testing()
-    #Solver3D.solve()
-    Solver3D.plotResults()
+
+    #Solver3D.plotResults()
 
  
 def generateUFL_BCexpressions():

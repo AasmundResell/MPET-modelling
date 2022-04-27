@@ -2300,7 +2300,6 @@ class MPET:
         qT, *qs = split(q)
 
         nnets = len(ps)
-        print("Number of networks:",nnets)
         
         a = (inner(2*mu*sym(grad(u)), sym(grad(v)))*dx + inner(pT, div(v))*dx
              + inner(qT, div(u))*dx
@@ -2340,7 +2339,17 @@ class MPET:
 
 
     def SolvePETSC(self):
-        A, b, W, B = get_system(32)
+
+        xdmfU = XDMFFile(self.filesave + "/FEM_results/u.xdmf")
+        xdmfU.parameters["flush_output"]=True
+
+        xdmfP = []
+        
+        for i in range(self.numPnetworks+1):
+            xdmfP.append(XDMFFile(self.filesave + "/FEM_results/p" + str(i) + ".xdmf"))        
+            xdmfP[i].parameters["flush_output"]=True
+
+        A, b, W, B = self.get_system(8)
     
         solver = PETScKrylovSolver()
         solver.parameters['error_on_nonconvergence'] = False
@@ -2380,3 +2389,12 @@ class MPET:
         wh = Function(W)
         solver.solve(wh.vector(), b)
         print(W.dim())
+        
+        u,p = wh.split(deepcopy = True)
+        t = 0
+        xdmfU.write(u, t)
+        for j in range(self.numPnetworks+1):
+            xdmfP[j].write(p.sub(j), t)
+
+
+
