@@ -23,8 +23,8 @@ def read_brain_mesh_3D():
     #hdf.read(MD, '/MD')
     #hdf.read(Kt, '/DTI')
     
-    File('subdomains.pvd')<<SD
-    File('bnd.pvd')<<bnd 
+    File('meshes/subdomains.pvd')<<SD
+    File('meshes/bnd.pvd')<<bnd 
 
     return mesh,SD,bnd
 

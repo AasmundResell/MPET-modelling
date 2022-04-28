@@ -10,13 +10,12 @@ import pylab
 import matplotlib
 import pandas
 import glob
+import timeit
 from pathlib import Path
 from block import block_mat, block_vec, block_transpose, block_bc,block_assemble
-#from block.iterative import *
-from block.algebraic.petsc import AMG
+from mshr import *
 
 import warnings
-from block.dolfin_util import *
 
 import petsc4py, sys
 petsc4py.init(sys.argv)
@@ -66,6 +65,7 @@ class MPET:
     
         self.T = kwargs.get("T")
         self.numTsteps = kwargs.get("num_T_steps")
+        self.dt = self.T / self.numTsteps
         self.t = np.linspace(0,float(self.T),int(self.numTsteps)+1)
         
         self.element_type = kwargs.get("element_type")
@@ -864,73 +864,6 @@ class MPET:
         """
 
 
-        
-        """
-        ##MATRIX_ASSEMBLY##
-        AA = block_mat([[Au,                  Bu, 0,  0,  0, L],
-                        [block_transpose(Bu),A0, B1, B2, B3, 0],
-                        [0,                  C0, A1, C2, C3, 0],
-                        [0,                  D0, D1, A2, D3, 0],
-                        [0,                  E0, E1, E2, A3, 0],
-                        [block_transpose(L), 0,  0,  0,  0,  0],
-                        ])
-
-        # Block diagonal preconditioner
-        IV = assemble(a + m)
-        IQ = assemble(inner(p, q)*dx)
-        IX = rigid_motions.identity_matrix(X)
-        P1 = assemble(d11 + a_p(self.K[0]) + s11)
-        P2 = assemble(d22 + a_p(self.K[1]) + s22)
-        P3 = assemble(d33 + a_p(self.K[2]) + s33)
-
-        BB = block_mat([[AMG(IV), 0,       0,       0,       0,       0],
-                        [0,       AMG(IQ), 0,       0,       0,       0],
-                        [0,       0,       P1,      0,       0,       0],
-                        [0,       0,       0,       P2,      0,       0],
-                        [0,       0,       0,       0,       P3,      0],
-                        [0,       0,       0,       0,       0,       IX],
-                        ])
-        x0 =  AA.create_vec() #Initial guess
-        [as_backend_type(xi).vec().setRandom() for xi in x0]
-
-        AAinv = MinRes(AA, precond=BB, initial_guess=x0, maxiter=120, tolerance=1E-8,
-                   show=2, relativeconv=True)
-        
-
-        ##BLOCK_VECTOR##
-
-        ##MOMENTUM##
-        #bu = assemble(sum(self.integrals_N)) #Only applies for this specific set of BC
-        bu = assemble(inner(self.n*Constant(0), v)*ds)
-        
-        ##TOTAL_PRESSURE##
-        b0 = assemble(inner(Constant(0), q)*dx)
-
-        ##FLUID_PRESSURE_1##
-        b1 = assemble(d10_prev+ d11_prev+ d12_prev+ d13_prev + self.dt*f(g_1, q))
-
-        ##FLUID_PRESSURE_2##
-        b2 = assemble(d20_prev+ d21_prev+ d22_prev+ d23_prev)
-
-
-        ##FLUID_PRESSURE_3##
-        beta1,P_r1 =  self.boundary_conditionsP[(3,1)]["RobinWK"]
-        n31 = self.dt*inner(P_r1, q) * self.ds(1)
-        beta2,P_r2 =  self.boundary_conditionsP[(3,2)]["RobinWK"]
-        n32 = self.dt*inner(P_r2, q) * self.ds(2)
-        b3 = assemble(d30_prev + d31_prev + d32_prev + d33_prev + n31 + n32)
-
-        ##RIGID_MOTION##
-        # Equivalent to assemble(inner(Constant((0, )*6), q)*dx) but cheaper
-        bz = Function(X).vector()
-
-        #bcs = block_bc([None, None,None,[self.bcs_D[0]],None], False)
-        DBC = DirichletBC(Q,Constant(0)*self.Pscale,self.boundary_markers,1,)
-        bcs = block_bc([None, None,None,[DBC],None], False)
-        rhs_bc = bcs.apply(AA)
-
-        """
-
         """
         ##TESTING
         bb = block_assemble([bu, b0, b1, b2, b3, bz])
@@ -1022,15 +955,6 @@ class MPET:
 
             progress += 1
 
-         
-        res = []
-        res = split(up)
-        u = project(res[0], W.sub(0).collapse())
-        p = []
-        
-        self.u_sol = u
-        self.p_sol = p
-
         """
 
 
@@ -1046,7 +970,6 @@ class MPET:
         self.ds = Measure("ds", domain=self.mesh, subdomain_data=self.boundary_markers)
         self.n = FacetNormal(self.mesh)  # normal vector on the boundary
 
-        self.dt = self.T / self.numTsteps
 
         # Add progress bar
         progress = Progress("Time-stepping", self.numTsteps)
@@ -1292,14 +1215,10 @@ class MPET:
                 xdmfP[j].write(up.sub(j+2), t)
 
 
-            #For calculating volume change in Windkessel model
-            results["dV_SAS_PREV"] = dV_PREV_SAS
-            results["dV_VEN_PREV"] = dV_PREV_VEN
 
             results["total_inflow"] = float(self.m)
             
-            #p_SAS_f, p_VEN_f,p_SP_f,Vv_dot,Vs_dot,Q_AQ,Q_FM = self.coupled_3P_model(p_SAS_f,p_VEN_f,p_SP_f,results) #calculates windkessel pressure @ t
-            #p_SAS_f, p_VEN_f,p_SP_f,Vv_dot,Vs_dot,Q_AQ,Q_FM = self.coupled_3P_model_MK_constrained(p_SAS_f,p_VEN_f,p_SP_f,results) #calculates windkessel pressure @ t
+            #p_SAS_f, p_VEN_f,p_SP_f,Vv_dot,Vs_dot,Q_AQ,Q_FM = self.coupled_3P_model(p_SAS_f,p_VEN_f,p_SP_f,dV_PREV_SAS,dV_PREV_VEN,results) #calculates windkessel pressure @ t
             
 
             #self.update_windkessel_expr(p_SAS_f,p_VEN_f) # Update all terms dependent on the windkessel pressures
@@ -1314,24 +1233,14 @@ class MPET:
             #results["Vs_dot"] =  Vs_dot
             results["t"] = t
 
-            #dV_PREV_SAS = results["dV_SAS"]
-            #dV_PREV_VEN = results["dV_VEN"]
+            dV_PREV_SAS = results["dV_SAS"]
+            dV_PREV_VEN = results["dV_VEN"]
 
             pickle.dump(results, open("%s/data_set/qois_%d.pickle" % (self.filesave, i), "wb"))
             
 
             up_n.assign(up)
             progress += 1
-
-            #self.t += self.dt
-         
-        res = []
-        res = split(up)
-        u = project(res[0], W.sub(0).collapse())
-        p = []
-        
-        self.u_sol = u
-        self.p_sol = p
 
     def plotResults(self,plotCycle = 0):
 
@@ -1693,7 +1602,7 @@ class MPET:
         return x[0], x[1],Vv_dot/V_dotScale,Vs_dot/V_dotScale,Q_AQ
 
 
-    def coupled_3P_model(self,p_SAS,p_VEN,p_SP,results):
+    def coupled_3P_model(self,p_SAS,p_VEN,p_SP,dV_SAS_prev,dV_VEN_prev,results):
         """
         This model calculates a 3-pressure lumped model for the SAS, ventricles and spinal-SAS compartments
 
@@ -1721,10 +1630,10 @@ class MPET:
         print("Q_VEN[mm³] :",Q_VEN)
 
         #Volume change of ventricles
-        Vv_dot = 1/self.dt*(results["dV_VEN"]-results["dV_VEN_PREV"])
+        Vv_dot = 1/self.dt*(results["dV_VEN"]-dV_VEN_prev)
         
         #Volume change of SAS
-        Vs_dot = 1/self.dt*(results["dV_SAS"]-results["dV_SAS_PREV"])
+        Vs_dot = 1/self.dt*(results["dV_SAS"]-dV_SAS_prev)
         
         print("Volume change VEN[mm³] :",Vv_dot)
         print("Volume change SAS[mm³] :",Vs_dot)
@@ -2244,8 +2153,8 @@ class MPET:
         return df
 
     def GenerateNumpySeries(self):
-        source_scale = 1/1173670.5408281302 #1/mm³
 
+        source_scale = 1/1173670.5408281302 #1/mm³
 
         Q = FunctionSpace(self.mesh,"CG",1)
         
@@ -2257,17 +2166,24 @@ class MPET:
         if self.scaleMean:
             g -= np.mean(g)
 
+        #plt.plot(self.t,g)
+        #plt.show()
         return g
 
 
 
-    def get_system(self,n):
+    def get_system(self,n,getMesh =False):
         '''MPET biot with 3 networks. Return system to be solved with PETSc'''
         # For simplicity we consider a stationary problem and displacement
         # and network pressures are fixed to 0 on the entire boundary
-        mesh = UnitCubeMesh(n, n, n)
+
+        #mesh = BoxMesh(Point((0,0,0)),Point((40,40,40)),n,n,n)
+        mesh = UnitCubeMesh(n,n,n)
+        if getMesh:
+            mesh = self.mesh
         cell = mesh.ufl_cell()
-        
+        n = FacetNormal(mesh)
+
         Velm = VectorElement('Lagrange', cell, 2)
         Qi_elm = FiniteElement('Lagrange', cell, 1)  # For one pressure
         Qelm = MixedElement([Qi_elm]*4)
@@ -2279,10 +2195,9 @@ class MPET:
         
         print(W.dim(), "<<<<<", mesh.num_entities_global(mesh.topology().dim()))
         
-        bcs = [DirichletBC(W.sub(0), Constant((0, )*len(u)), 'on_boundary')]
-        # Add the network ones
-        bcs.extend([DirichletBC(W.sub(1).sub(net), Constant(0), 'on_boundary')
-                    for net in range(1, 4)])
+        self.bcs_D = []
+
+        self.bcs_D.extend([DirichletBC(W.sub(1).sub(2), Constant(0), 'on_boundary')])
         
         mu, lmbda = Constant(self.mu), Constant(self.Lambda)
         alphas = Constant((self.alpha_val[0], self.alpha_val[1],self.alpha_val[2]))
@@ -2299,6 +2214,8 @@ class MPET:
         pT, *ps = split(p)
         qT, *qs = split(q)
 
+        tau = Constant(self.dt)
+
         nnets = len(ps)
         
         a = (inner(2*mu*sym(grad(u)), sym(grad(v)))*dx + inner(pT, div(v))*dx
@@ -2311,35 +2228,113 @@ class MPET:
             a = a - (1/lmbda)*inner(alphas[j]*qs[j], pT)*dx
             # The diagonal part
             a = a - (inner(cs[j]*ps[j], qs[j])*dx +
-                     inner(Ks[j]*grad(ps[j]), grad(qs[j]))*dx +
+                     tau*inner(Ks[j]*grad(ps[j]), grad(qs[j]))*dx +
                      (1/lmbda)*sum(inner(alphas[i]*ps[i], qs[j])*dx for i in range(nnets)) +
-                    sum(inner(Ts[j, i]*(ps[j] - ps[i]), qs[j])*dx for i in range(nnets) if i != j))
+                    sum(tau*inner(Ts[j, i]*(ps[j] - ps[i]), qs[j])*dx for i in range(nnets) if i != j))
 
         # Now the preconditioner operator
-        a_prec = (inner(2*mu*sym(grad(u)), sym(grad(v)))*dx
+        a_prec = (inner(2*mu*sym(grad(u)), sym(grad(v)))*dx  #+ inner(2*mu*u, v)*dx
                   + (1/lmbda + 1/(2*mu))*inner(pT, qT)*dx)
         # Add the eq tested with networks
         for j in range(nnets):
             a_prec =  a_prec + (1/lmbda)*inner(alphas[j]*qs[j], pT)*dx
             # The diagonal part
             a_prec = a_prec + (inner(cs[j]*ps[j], qs[j])*dx +
-                               inner(Ks[j]*grad(ps[j]), grad(qs[j]))*dx +
+                               tau*inner(Ks[j]*grad(ps[j]), grad(qs[j]))*dx +
                                (1/lmbda)*sum(inner(alphas[i]*ps[i], qs[j])*dx for i in range(nnets)) +
-                               sum(inner(Ts[j, i]*(ps[j] - ps[i]), qs[j])*dx for i in range(nnets) if i != j))
+                               sum(tau*inner(Ts[j, i]*(ps[j] - ps[i]), qs[j])*dx for i in range(nnets) if i != j))
 
-        r = SpatialCoordinate(mesh)
-        # Soma fake rhs
-        L = inner(r, v)*dx
+        #Initial RHS
+
+        #f for float value, not dolfin expression
+        p_VEN_f = self.p_BC_initial[0]
+        p_SAS_f = self.p_BC_initial[1]
+        p_SP_f = self.p_BC_initial[2]
+        
+        print("P_VEN =,", p_VEN_f)
+        print("P_SAS =,", p_SAS_f)
+
+        g = Constant(self.g[0][0]) #Source term
+        #g = Constant(0)
+        self.m = assemble(g*dx(mesh))
             
-        B, _ = assemble_system(a_prec, L, bcs)
-        A, b = assemble_system(a, L, bcs)
+        p_SAS = Constant(2)
+        p_VEN = Constant(4)
 
-        return A, b, W, B
+        L = ( inner(-n*p_SAS,v)*ds
+        #+ inner(-n*p_VEN,v)*self.ds(2)
+        - inner(g,qs[0])*dx
+        - inner(p_SAS,qs[2])*ds
+       # - inner(p_VEN,qs[2])*self.ds(2)
+        )
+        
+        up_ = Function(W)
+        pT_, *ps_ = split(up_.sub(1))       
 
+        #Add terms from the previous timestep 
+        for j in range(nnets): 
+            L = L - (1/lmbda)*inner(alphas[j]*qs[j], pT_)*dx
+            # The diagonal part
+            L = L - (inner(cs[j]*ps_[j], qs[j])*dx +
+                     (1/lmbda)*sum(inner(alphas[i]*ps_[i], qs[j])*dx for i in range(nnets)))
 
+        B, _ = assemble_system(a_prec, L, self.bcs_D)
+        
+        # For dealing with the need to reassemble b in a time loop we do
+        # things a bit differently
+        
+        assembler = SystemAssembler(a, L, self.bcs_D)
+
+        return assembler, W, B
+
+    def updateRHS(self,W,p,i):
+
+        v, q = TestFunctions(W)
+        n = FacetNormal(W.mesh())
+
+        mu, lmbda = Constant(self.mu), Constant(self.Lambda)
+        alphas = Constant((self.alpha_val[0], self.alpha_val[1],self.alpha_val[2]))
+        cs = Constant((self.c_val[0], self.c_val[1], self.c_val[2]))
+        
+        # The first of the pressure is the total pressure, the rest ones
+        # are networks
+        pT, *ps = split(p)
+        qT, *qs = split(q)
+
+        g = Constant(self.g[0][i]) #Source term
+        #g = Constant(0)
+        self.m = assemble(g*dx(W.mesh()))
+        p_SAS = Constant(2)
+        p_VEN = Constant(4)
+
+        
+        L = ( inner(-n*p_SAS,v)*ds
+        #+ inner(-n*p_VEN,v)*self.ds(2)
+        - inner(g,qs[0])*dx
+        - inner(p_SAS,qs[2])*ds
+       # - inner(p_VEN,qs[2])*self.ds(2)
+        )
+        
+        
+        nnets = len(ps)
+
+        #Add terms from the previous timestep 
+        for j in range(nnets):
+            L = L - (1/lmbda)*inner(alphas[j]*qs[j], pT)*dx
+            # The diagonal part
+            L = L - (inner(cs[j]*ps[j], qs[j])*dx +
+                     (1/lmbda)*sum(inner(alphas[i]*ps[i], qs[j])*dx for i in range(nnets)))
+
+        #[bc.apply(assembler.bcs) for bc in self.bcs_D]
+
+        return L
 
     def SolvePETSC(self):
 
+        # Add progress bar
+        progress = Progress("Time-stepping", self.numTsteps)
+        set_log_level(LogLevel.PROGRESS)
+       
         xdmfU = XDMFFile(self.filesave + "/FEM_results/u.xdmf")
         xdmfU.parameters["flush_output"]=True
 
@@ -2349,13 +2344,56 @@ class MPET:
             xdmfP.append(XDMFFile(self.filesave + "/FEM_results/p" + str(i) + ".xdmf"))        
             xdmfP[i].parameters["flush_output"]=True
 
-        A, b, W, B = self.get_system(8)
-    
+        getMesh = False
+
+        assembler, W, B = self.get_system(20,getMesh)
+
+        mesh = W.mesh()
+        
+        # RM basis as expressions
+        basis = rigid_motions.rm_basis(mesh)
+        # we want to represent RM modes in W
+        U = W.sub(0).collapse()
+
+        basis_W = []
+        for z in basis:
+            zU = interpolate(z, U)  # Get them in the displacement space
+            zW = Function(W)        # In W the modes that the form (z, 0)
+            assign(zW.sub(0), zU)   # where 0 is for all the pressure spaces
+            basis_W.append(zW.vector())
+
+        # Nullspace, here we want l^2 orthogonality        
+        basis_W = rigid_motions.orthogonalize_gs(basis_W, A=None)
+
+        # Remove RM from the RHS
+        Z = VectorSpaceBasis(basis_W)
+
+        comm = W.mesh().mpi_comm()
+        # Before the time loop we can get the A once and for all
+        A = PETScMatrix(comm)
+        assembler.assemble(A)
+
+        b = PETScVector(comm)
+        # In the time loop suppose we do changes that modify bc values etc
+        # so we need to reassemble
+        assembler.assemble(b)
+        # Orthogonalize the newly filled vector
+        Z.orthogonalize(b)
+
+
         solver = PETScKrylovSolver()
         solver.parameters['error_on_nonconvergence'] = False
         ksp = solver.ksp()
-        
+
+        # Attach the nullspace to the system operators
+        # NOTE: I put it also to the preconditioner in cases it might help
+        # AMG later
+        Z_ = PETSc.NullSpace().create([as_backend_type(z).vec() for z in basis_W])
+        A_, B_ = (as_backend_type(mat).mat() for mat in (A, B))
+        [mat.setNearNullSpace(Z_) for mat in (A_, B_)]
+ 
         solver.set_operators(A, B)
+
         OptDB = PETSc.Options()    
         OptDB.setValue('ksp_type', 'minres')
         OptDB.setValue('pc_type', 'fieldsplit')
@@ -2373,28 +2411,67 @@ class MPET:
         pc.setFieldSplitIS(*splits)        
         assert len(splits) == 2
         
-        OptDB.setValue('fieldsplit_0_pc_type', 'lu')  
-        OptDB.setValue('fieldsplit_1_pc_type', 'hypre')  # AMG in cbc block
         
+        OptDB.setValue('fieldsplit_0_pc_type', 'hypre')
+        OptDB.setValue('fieldsplit_0_pc_hypre_boomeramg_strong_threshold', '0.7')
+        OptDB.setValue('fieldsplit_0_pc_hypre_boomeramg_coarsen_type','HMIS')
+        OptDB.setValue('fieldsplit_0_pc_hypre_boomeramg_interp_type','ext+i')
+        
+        
+
+        OptDB.setValue('fieldsplit_1_pc_type', 'hypre')  # AMG in cbc block
+        OptDB.setValue('fieldsplit_1_pc_hypre_boomeramg_strong_threshold', '0.7')
+        OptDB.setValue('fieldsplit_1_pc_hypre_boomeramg_coarsen_type','HMIS')
+        OptDB.setValue('fieldsplit_1_pc_hypre_boomeramg_interp_type','ext+i')
+
         OptDB.setValue('ksp_norm_type', 'preconditioned')
         # Some generics
         OptDB.setValue('ksp_view', None)
+        
         OptDB.setValue('ksp_monitor_true_residual', None)    
         OptDB.setValue('ksp_converged_reason', None)
         # NOTE: minres does not support unpreconditioned
         OptDB.setValue('ksp_rtol', 1E-10)
+        OptDB.setValue('ksp_initial_guess_nonzero', '1')
+        
+        OptDB.setValue('ksp_atol', 1E-04) #r tol should be smaller than a in transient
+
         # Use them!
         ksp.setFromOptions()
-        
-        wh = Function(W)
-        solver.solve(wh.vector(), b)
-        print(W.dim())
-        
-        u,p = wh.split(deepcopy = True)
+
         t = 0
-        xdmfU.write(u, t)
-        for j in range(self.numPnetworks+1):
-            xdmfP[j].write(p.sub(j), t)
+
+        wh = Function(W)
+        i = 0
+        while t < self.T:
+
+            starttime = timeit.default_timer()
+            solver.solve(wh.vector(), b)
+            print("System solved in {} seconds".format(timeit.default_timer() - starttime))
+
+            u,p = wh.split(deepcopy = True)
+            print("Div u:", assemble(div(u)*dx))
+            
+            
+            xdmfU.write(u, t)
+            for j in range(self.numPnetworks+1):
+                xdmfP[j].write(p.sub(j), t)
+
+            #results = self.generate_diagnostics(u,p.sub(0),p.sub(1),p.sub(2),p.sub(3))   
+            #results["total_inflow"] = float(self.m)
+            #results["t"] = t
+
+            #pickle.dump(results, open("%s/data_set/qois_%d.pickle" % (self.filesave, i), "wb"))
+            
+
+            t += self.dt
+            i += 1
+            progress += 1
+
+            L = self.updateRHS(W,p,i)
+
+            assembler.assemble(b,L)
+            Z.orthogonalize(b)
 
 
 

@@ -1,88 +1,98 @@
-from block.block_base import block_base
+from block import block_base
 from block.object_pool import vec_pool
-from petsc4py import PETSc
-import dolfin as d
-import numpy as np
-from mpi4py import MPI as pyMPI
+import petsc4py, sys
+petsc4py.init(sys.argv)
 
-class MyExpression(d.Expression):
+from petsc4py import PETSc
+from dolfin import *
+import numpy as np
+print = PETSc.Sys.Print
+
+
+class MyExpression(Expression):
     def eval(self, value, x):
         value[0] = 1.0
     def value_shape(self):
         return (1,)
 
-def rm_basis(mesh):
-    """
-    Finds the orthonormal basis of rigid motion in terms of
-    the principal axis of rotational energy
-    """
 
+def rm_basis(mesh):
+    '''6 functions(Expressions) that are the rigid motions of the body.'''
+    assert mesh.topology().dim() == 3
     
-    gdim = mesh.geometry().dim()
-    x = d.SpatialCoordinate(mesh)
-    c = np.array([d.assemble(xi*d.dx) for xi in x])
-    volume = d.assemble(d.Constant(1)*d.dx(domain=mesh))
+    x = SpatialCoordinate(mesh)
+    dX = dx(domain=mesh)
+    # Center of mass
+    c = np.array([assemble(xi*dX) for xi in x])
+    volume = assemble(Constant(1)*dX)
     c /= volume
     c_ = c
-    c = d.Constant(c)
+    c = Constant(c)
 
-    if gdim == 1:       
-        translations = [(MyExpression())]        
-        return translations
-    
-    if gdim == 2:
-        translations = [d.Constant((1./d.sqrt(volume), 0)),
-                        d.Constant((0, 1./d.sqrt(volume)))]
+    # Gram matrix of rotations around canonical axis and center of mass
+    R = np.zeros((3, 3))
 
-        # The rotational energy
-        r = d.assemble(d.inner(x-c, x-c)*d.dx)
+    ei_vectors = [Constant((1, 0, 0)), Constant((0, 1, 0)), Constant((0, 0, 1))]
+    for i, ei in enumerate(ei_vectors):
+        R[i, i] = assemble(inner(cross(x-c, ei), cross(x-c, ei))*dX)
+        for j, ej in enumerate(ei_vectors[i+1:], i+1):
+            R[i, j] = R[j, i] = assemble(inner(cross(x-c, ei), cross(x-c, ej))*dX)
 
-        C0, C1 = c.values()
-        rotations = [d.Expression(('-(x[1]-C1)/A', '(x[0]-C0)/A'), 
-                                C0=C0, C1=C1, A=d.sqrt(r), degree=1)]
-        
-        return translations + rotations
+    # Eigenpairs
+    eigw, eigv = np.linalg.eigh(R)      
+    if np.min(eigw) < 1E-8: warning('Small eigenvalues %g.' % np.min(eigw))
+    eigv = eigv.T
 
-    if gdim == 3:
-        # Gram matrix of rotations
-        R = np.zeros((3, 3))
+    # Translations: ON basis of translation in direction of rot. axis
+    translations = [Constant(v/sqrt(volume)) for v in eigv]
 
-        ei_vectors = [d.Constant((1, 0, 0)), d.Constant((0, 1, 0)), d.Constant((0, 0,1))]
-        for i, ei in enumerate(ei_vectors):
-            R[i, i] = d.assemble(d.inner(d.cross(x-c, ei), d.cross(x-c, ei))*d.dx)
-            for j, ej in enumerate(ei_vectors[i+1:], i+1):
-                R[i, j] = d.assemble(d.inner(d.cross(x-c, ei), d.cross(x-c, ej))*d.dx)
-                R[j, i] = R[i, j]
+    # Rotations using the eigenpairs
+    # C0, C1, C2 = c.values()
+    C0, C1, C2 = c_
 
-        # Eigenpairs
-        eigw, eigv = np.linalg.eigh(R)
-        if np.min(eigw) < 1E-8: warning('Small eigenvalues %g' % np.min(eigw))
-        eigv = eigv.T
-        # info('Eigs %r' % eigw)
+    def rot_axis_v(pair):
+        '''cross((x-c), v)/sqrt(w) as an expression'''
+        v, w = pair
+        return Expression(('((x[1]-C1)*v2-(x[2]-C2)*v1)/A',
+                           '((x[2]-C2)*v0-(x[0]-C0)*v2)/A',
+                           '((x[0]-C0)*v1-(x[1]-C1)*v0)/A'),
+                           C0=C0, C1=C1, C2=C2, 
+                           v0=v[0], v1=v[1], v2=v[2], A=sqrt(w),
+                           degree=1)
 
-        # Translations: ON basis of translation in direction of rot. axis
-        # The axis of eigenvectors is ON but dont forget the volume
-        translations = [d.Constant(v/d.sqrt(volume)) for v in eigv]
+    # Roations are described as rot around v-axis centered in center of gravity 
+    rotations = list(map(rot_axis_v, list(zip(eigv, eigw))))
 
-        # Rotations using the eigenpairs
-        C0, C1, C2 = c_
-
-        def rot_axis_v(pair):
-            '''cross((x-c), v)/sqrt(w) as an expression'''
-            v, w = pair
-            return d.Expression(('((x[1]-C1)*v2-(x[2]-C2)*v1)/A',
-                               '((x[2]-C2)*v0-(x[0]-C0)*v2)/A',
-                               '((x[0]-C0)*v1-(x[1]-C1)*v0)/A'),
-                               C0=C0, C1=C1, C2=C2, 
-                               v0=v[0], v1=v[1], v2=v[2], A=d.sqrt(w),
-                               degree=1)
-        # Roations are discrebed as rot around v-axis centered in center of
-        # gravity 
-        rotations = list(map(rot_axis_v, zip(eigv, eigw)))
-   
-        return translations + rotations
+    Z = translations + rotations
+    return Z
+      
+def is_square(mat):
+    '''Matrix is square'''
+    return size(mat, 0) == size(mat, 1)
 
 
+def orthogonalize_gs(vectors, A=None):
+    '''Modified Gram-Schmidt orthogonalization'''
+    assert A is None or is_square(A)
+    mv = []
+    for i, veci in enumerate(vectors):
+        for j in range(i):
+            vectors[i] -= veci.inner(mv[j])*vectors[j]
+
+        if A is not None:
+            hv = A*veci
+        else:
+            hv = veci.copy()
+            
+        norm = sqrt(veci.inner(hv))
+        veci *= 1/norm
+        hv *= 1/norm
+        mv.append(hv)
+
+    return vectors
+
+
+"""
 
 def first(x):
     '''First item in iterable'''
@@ -92,7 +102,7 @@ def first(x):
 def identity_matrix(V, e=1.):
     '''Diagonal matrix'''
     # Avoiding assembly if this is Real space.
-    diag = d.Function(V).vector()
+    diag = Function(V).vector()
     global_size = diag.size()
     local_size = diag.local_size()
     #mpi_comm = d.MPI.comm_world
@@ -101,7 +111,7 @@ def identity_matrix(V, e=1.):
     
     mat = PETSc.Mat().createAIJ(size=[[local_size, global_size],
                                       [local_size, global_size]], nnz=1, comm=mpi_comm)
-    diag = d.as_backend_type(diag).vec()
+    diag = as_backend_type(diag).vec()
     diag.set(e)
     mat.setDiagonal(diag)
 
@@ -135,7 +145,7 @@ class RMBasis(block_base):
         else:
             warning('Using precomputed basis.')
         # We keep the coefficents for computing the action
-        self.basis = [d.interpolate(z, V).vector() for z in Z]
+        self.basis = [interpolate(z, V).vector() for z in Z]
         self.V = V
         self.Q = Q
 
@@ -166,9 +176,9 @@ class RMBasis(block_base):
     @vec_pool
     def create_vec(self, dim):
         if dim == 1:
-            return d.Function(self.Q).vector()
+            return Function(self.Q).vector()
         else:
-            return d.Function(self.V).vector()
+            return Function(self.V).vector()
 
     def rigid_motion(self, c):
         '''Rigid motion represented in the basis by c.'''
@@ -181,7 +191,7 @@ class RMBasis(block_base):
             
             return d.Function(self.V, x)
 
-        if isinstance(c, d.GenericVector):
+        if isinstance(c, GenericVector):
             c = c.gather_on_zero()  # Only master, other have []
             # Communicate the coefficients to everybody
             if len(c) == 0:
@@ -254,36 +264,6 @@ class Projector(block_base):
     def create_vec(self, dim):
         return Function(self.V).vector()
 
-""" Must install pytrilinos first!
-class ML(block_base):
-    def __init__(self,A,pdes=1):
-        MLList = {
-            "smoother: type" : "ML symmteric Gauss-Seidel",
-            "aggregation: type" : "Uncoupled",
-            "ML validate parameter list" : True,
-        }
-        self.A = A
-        self.ml_prec = MultiLevelPreconditioner(A.down_cast().mat(),0)
-        self.ml_prec.SetParameterList(MMList)
-        self.ml_agg = self.ml_prec.GetML_Aggregate()
-        self.ml_prec.ComputePreconditioner()
-    def matvec(self,b):
-        x = self.A.create_vec()
-        self.ml_prec.ApplyInverse(b.down_cast().vec(),x.down_cast().vec())
-        return x
-
-def test_I():
-    '''Identity'''
-    V = FunctionSpace(UnitSquareMesh(10, 10), 'CG', 1)
-    I = identity_matrix(V)
-    x = interpolate(Expression('x[0]', degree=1), V).vector()
-    y = x.copy()
-    I.mult(x, y)
-    assert (x-y).norm('linf') < 1E-14
-
-    return True
-"""
-
 
 def test_Zh(n=4):
     '''L2 orthogonality'''
@@ -340,3 +320,4 @@ def test_P(n=4):
 
 if __name__ == '__main__':
     assert all(test() for test in (test_I, test_Zh, test_P))
+"""
