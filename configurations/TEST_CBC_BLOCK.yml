@@ -2,8 +2,8 @@
 
 solver_settings:
   log_level : 20
-  T : 8.0
-  num_T_steps : 200
+  T : 16.0
+  num_T_steps : 400
   num_networks : 3
   num_boundaries : 2
   element_type : CG
@@ -28,9 +28,9 @@ material_parameters:
     - 0.333 #Biot-Willis coefficient fluid 2
     - 0.333 #Biot-Willis coefficient fluid 3
   c :
-    - 2.9e-5 #Storage coefficient fluid 1, 1/Pa
+    - 2.9e-3 #Storage coefficient fluid 1, 1/Pa
     - 1.5e-3 #Storage coefficient fluid 2, 1/Pa
-    - 2.9e-6 #Storage coefficient fluid 3, 1/Pa
+    - 2.9e-3 #Storage coefficient fluid 3, 1/Pa
   mu_f :
     - 2.67e-3 #Viscosity fluid 1, Pa*s
     - 2.67e-3 #Viscosity fluid 2, Pa*s
@@ -61,7 +61,7 @@ boundary_parameters:
   p_ven_initial : 3.5
   p_spine_initial : 3.5
   #ScalePressure : 133 #mmHg to Pa
-  p_vein : 6 # Back pressure, vein network
+  p_vein : 0 # Back pressure, vein network
   #for alt model, remember that mesh is in mm
   length : 70.0 #[mm]
   diameter : 3.0 #[mm]
