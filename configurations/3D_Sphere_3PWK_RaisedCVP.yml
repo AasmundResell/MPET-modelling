@@ -30,16 +30,16 @@ material_parameters:
     - 0.3 #Biot-Willis coefficient fluid 3
   c :
     - 2.9e-4 #Storage coefficient fluid 1, 1/Pa
-    - 1.5e-6 #Storage coefficient fluid 2, 1/Pa
-    - 2.9e-3 #Storage coefficient fluid 3, 1/Pa
+    - 1.5e-5 #Storage coefficient fluid 2, 1/Pa
+    - 2.9e-4 #Storage coefficient fluid 3, 1/Pa
   mu_f :
     - 2.67e-3 #Viscosity fluid 1, Pa*s
     - 2.67e-3 #Viscosity fluid 2, Pa*s
     - 6.97e-4 #Viscosity fluid 3, Pa*s
   p_initial :
-    - 120 #Initial pressure network 1
-    - 110 #Initial pressure network 2
-    - 40 #Initial pressure network 3
+    - 400 #Initial pressure network 1
+    - 200 #Initial pressure network 2
+    - 100 #Initial pressure network 3
   gamma :
     - 0 #1/(Pa*s) Transfer network: 1-1
     - 1.0e-3 #1/(Pa*s) Transfer network: 1-2
@@ -58,11 +58,11 @@ boundary_parameters:
   Compliance_spine : 100.41 # [mL/Pa#] 
   beta_sas : 1.0e-3 
   beta_ven : 1.0e-3
-  p_sas_initial : 2.8
-  p_ven_initial : 2.8
-  p_spine_initial : 2.8
+  p_sas_initial : 266
+  p_ven_initial : 266
+  p_spine_initial : 266
   #ScalePressure : 133 #mmHg to Pa
-  p_vein : 0 # Back pressure, vein network
+  p_vein : 266 # Back pressure, vein network
   #for alt model, remember that mesh is in mm
   length : 70.0 #[mm]
   diameter : 3.0 #[mm]

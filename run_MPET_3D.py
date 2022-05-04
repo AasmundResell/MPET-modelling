@@ -41,9 +41,9 @@ def run_MPET_3D():
     #Generate boundary conditions for the displacements
     #The integer keys represents a boundary (marker)
     boundary_conditionsU = {
-        1: {"Dirichlet": U},
+        1: {"NeumannWK": pSkull},
         2: {"NeumannWK": pVentricles},
-        3: {"NeumannWK": pVentricles},
+        3: {"Dirichlet": U},
     }
     
     #Generate boundary conditions for the fluid pressures
@@ -58,7 +58,7 @@ def run_MPET_3D():
         (2, 3): {"Dirichlet": Constant(p_BP)}, #Cerebellum close to jugular veins
         (3, 1): {"RobinWK": (beta_SAS,pSkull)},
         (3, 2): {"RobinWK": (beta_VEN,pVentricles)},
-        (3, 3): {"RobinWK": (beta_VEN,pVentricles)},
+        (3, 3): {"RobinWK": (beta_SAS,pSkull)},
     }
 
     Solver3D = MPET(
@@ -92,8 +92,8 @@ def run_MPET_3D_TestSphere():
 
     meshN = settings["mesh_resolution"]
 
-    """
 
+    """
     mesh = Mesh("meshes/sphere_mesh/sphere_hollow.xml")
     facet_f = MeshFunction("size_t", mesh, 2)
 
@@ -131,7 +131,7 @@ def run_MPET_3D_TestSphere():
     #Generate boundary conditions for the displacements
     #The integer keys represents a boundary (marker)
     boundary_conditionsU = {
-        1: {"NeumannWK": pSkull},
+        1: {"Dirichlet": U},
         2: {"NeumannWK": pVentricles},
     }
     
@@ -143,8 +143,8 @@ def run_MPET_3D_TestSphere():
         (1, 2): {"Neumann": 0},
         (2, 1): {"Dirichlet": Constant(p_BP)},
         (2, 2): {"Neumann": 0},
-        (3, 1): {"NeumannWK": pSkull},
-        (3, 2): {"NeumannWK": pVentricles},
+        (3, 1): {"RobinWK": (beta_SAS,pSkull)},
+        (3, 2): {"RobinWK": (beta_VEN,pVentricles)},
     }
 
     Solver3D = MPET(
@@ -160,8 +160,7 @@ def run_MPET_3D_TestSphere():
     
     Solver3D.printSetup()
     #Solver3D.solve()
-    #Solver3D.SolvePETSC()
-    Solver3D.LM_PETSc_TEST()
+    Solver3D.SolvePETSC()
     Solver3D.plotResults()
 
  

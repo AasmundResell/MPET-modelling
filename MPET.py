@@ -1226,8 +1226,8 @@ class MPET:
             results["Q_AQ"] = Q_AQ
             results["Q_FM"] = Q_FM
 
-            results["Vv_dot"] = dVv_dot
-            results["Vs_dot"] = dVs_dot
+            results["Vv_dot"] = Vv_dot
+            results["Vs_dot"] = Vs_dot
             results["t"] = t
             
             dV_PREV_SAS = results["dV_SAS"]
@@ -1235,12 +1235,7 @@ class MPET:
 
             pickle.dump(results, open("%s/data_set/qois_%d.pickle" % (self.filesave, self.i), "wb"))
 
-            dV_PREV_SAS = results["dV_SAS"]
-            dV_PREV_VEN = results["dV_VEN"]
-
-            pickle.dump(results, open("%s/data_set/qois_%d.pickle" % (self.filesave, self.i), "wb"))
             
-
             up_n.assign(up)
             progress += 1
 
@@ -1478,8 +1473,12 @@ class MPET:
         Vol = assemble(1*dx(self.mesh))
         A = np.sqrt(Vol)
         for (i, p) in enumerate(p_list):
-            results["max_p_%d" % (i)] = max(p.vector())
-            results["min_p_%d" % (i)] = min(p.vector())
+            results["max_p_%d" % (i)] = p.vector().max()
+            print("Max pressure in network {}".format(i))
+            print(results["max_p_%d" % (i)])
+            results["min_p_%d" % (i)] = p.vector().min()
+            print("Min pressure in network {}".format(i))
+            print(results["min_p_%d" % (i)])
             results["mean_p_%d" % (i)] = assemble(p*dx)/Vol
             
             if i > 0: # Darcy velocities
@@ -1507,6 +1506,60 @@ class MPET:
         S = FunctionSpace(self.mesh, "CG", 1)
         t12 = project(self.gamma[0,1]*(p_list[1]-p_list[2]),S)
         t13 = project(self.gamma[0,2]*(p_list[1]-p_list[3]),S)
+        results["T12"] = norm(t12,"L2")
+        results["T13"] = norm(t13,"L2")
+        return results
+ 
+    def generate_diagnosticsPETSc(self,u,p):
+        results = {}
+        
+        # Volume displacement:
+        dV = assemble(div(u)*dx)
+        results["dV"] = dV
+        print("div(u)*dx (mm^3) = ", dV)
+        
+        V = VectorFunctionSpace(self.mesh, 'CG' ,1)
+   
+        ps_v = p.split(deepcopy=True)
+        
+
+        Vol = assemble(1*dx(self.mesh))
+        A = np.sqrt(Vol)
+
+        for i in range(self.numPnetworks+1):
+            results["max_p_%d" % (i)] = ps_v[i].vector().max()
+            print("Max pressure in network {}".format(i))
+            print(results["max_p_%d" % (i)])
+            results["min_p_%d" % (i)] = ps_v[i].vector().min()
+            print("Min pressure in network {}".format(i))
+            print(results["min_p_%d" % (i)])
+            results["mean_p_%d" % (i)] = assemble(p.sub(i)*dx)/Vol
+            
+            if i > 0: # Darcy velocities
+                v = project(self.K[i-1]*grad(p.sub(i)),
+                            V,
+                            solver_type = self.solverType,
+                            preconditioner_type = self.preconditioner,
+                            )
+                v_avg = norm(v, "L2")/A
+                results["v%d_avg" % (i)] = v_avg
+        
+                #Calculate outflow for each network
+                results["Q_SAS_N%d" %(i)] = assemble(-self.K[i-1] * dot(grad(p.sub(i)), self.n) * self.ds(1))
+                results["Q_VEN_N%d" %(i)] = assemble(-self.K[i-1] * dot(grad(p.sub(i)), self.n) * self.ds(2)) + assemble(
+                -self.K[i-1] * dot(grad(p.sub(i)),self.n) * self.ds(3))
+
+
+
+        results["G_a"] = self.m
+        results["dV_SAS"] = assemble(dot(u,self.n)*self.ds(1))
+        results["dV_VEN"] = assemble(dot(u,self.n)*(self.ds(2) + self.ds(3)))
+        
+
+        # Transfer rates
+        S = FunctionSpace(self.mesh, "CG", 1)
+        t12 = project(self.gamma[0,1]*(p.sub(1)-p.sub(2)),S)
+        t13 = project(self.gamma[0,2]*(p.sub(1)-p.sub(3)),S)
         results["T12"] = norm(t12,"L2")
         results["T13"] = norm(t13,"L2")
         return results
@@ -2177,9 +2230,7 @@ class MPET:
 
         return g
 
-
-
-    def get_system(self,n,getMesh =False):
+    def get_system_fixed(self,n,getMesh =False):
         '''MPET biot with 3 networks. Return system to be solved with PETSc'''
         # For simplicity we consider a stationary problem and displacement
         # and network pressures are fixed to 0 on the entire boundary
@@ -2187,7 +2238,153 @@ class MPET:
         if getMesh:
             mesh = self.mesh
         else:
-            mesh = BoxMesh(Point((0,0,0)),Point((40,40,40)),n,n,n)
+            #mesh = BoxMesh(Point((0,0,0)),Point((40,40,40)),n,n,n)
+            mesh = UnitCubeMesh(n,n,n)
+            self.mesh = mesh
+            self.ds = ds(mesh)
+
+        cell = mesh.ufl_cell()
+        n = FacetNormal(mesh)
+
+        Velm = VectorElement('Lagrange', cell, 2)
+
+        Qi_elm = FiniteElement('Lagrange', cell, 1)  # For one pressure
+        Qelm = MixedElement([Qi_elm]*4)
+
+        Welm = MixedElement([Velm, Qelm]) 
+        
+        W = FunctionSpace(mesh, Welm)
+        u, p = TrialFunctions(W)
+        v, q = TestFunctions(W)
+
+        print(W.dim(), "<<<<<", mesh.num_entities_global(mesh.topology().dim()))
+
+        self.bcs_D = []
+       
+        p_VENOUS = self.boundary_conditionsP[(2, 1)]["Dirichlet"]
+        p_SAS = Constant(self.p_BC_initial[0])
+        p_VEN = Constant(self.p_BC_initial[1])
+ 
+        
+        self.bcs_D.extend([DirichletBC(W.sub(0), Constant((0, )*len(u)), self.boundary_markers, 1,)])
+
+        self.bcs_D.extend([DirichletBC(W.sub(1).sub(2), p_VENOUS, self.boundary_markers, 1,)])
+        self.bcs_D.extend([DirichletBC(W.sub(1).sub(3), p_SAS, self.boundary_markers, 1,)])
+        self.bcs_D.extend([DirichletBC(W.sub(1).sub(3), p_VEN, self.boundary_markers, 2,)])
+
+
+        
+        mu, lmbda = Constant(self.mu), Constant(self.Lambda)
+        alphas = Constant((self.alpha_val[0], self.alpha_val[1],self.alpha_val[2]))
+        cs = Constant((self.c_val[0], self.c_val[1], self.c_val[2]))
+        Ks = Constant((self.K_val[0], self.K_val[1], self.K_val[2]))
+        
+        # Exchange matrix; NOTE: I am not sure about the sign here
+        Ts = Constant(((0,               self.gamma[0,1], self.gamma[0,2]),
+                       (self.gamma[1,0],               0, self.gamma[1,2]),
+                       (self.gamma[2,0], self.gamma[2,1],               0)))
+
+        # The first of the pressure is the total pressure, the rest ones
+        # are networks
+        pT, *ps = split(p)
+        qT, *qs = split(q)
+
+        tau = Constant(self.dt)
+
+        nnets = len(ps)
+        
+        a = (inner(2*mu*sym(grad(u)), sym(grad(v)))*dx + inner(pT, div(v))*dx
+             + inner(qT, div(u))*dx
+             - (1/lmbda)*inner(pT, qT)*dx
+             - (1/lmbda)*sum(inner(alphas[i]*ps[i], qT)*dx for i in range(nnets)))
+
+        # Add the eq tested with networks
+        for j in range(nnets):
+            a = a - (1/lmbda)*inner(alphas[j]*qs[j], pT)*dx
+            # The diagonal part
+            a = a - (inner(cs[j]*ps[j], qs[j])*dx +
+                     tau*inner(Ks[j]*grad(ps[j]), grad(qs[j]))*dx +
+                     (1/lmbda)*sum(inner(alphas[i]*ps[i], qs[j])*dx for i in range(nnets)) +
+                    sum(tau*inner(Ts[j, i]*(ps[j] - ps[i]), qs[j])*dx for i in range(nnets) if i != j and Ts[j, i] != Constant(0)))
+
+        beta_SAS, _ = self.boundary_conditionsP[(3, 1)]["RobinWK"]
+        beta_VEN, _ = self.boundary_conditionsP[(3, 2)]["RobinWK"]
+        
+        #a = a
+        #- inner(tau*beta_SAS*ps[2],qs[2])*self.ds(1)
+        #- inner(tau*beta_VEN*ps[2],qs[2])*self.ds(2)
+        #- inner(tau*beta_SAS*ps[2],qs[2])*self.ds(3)
+
+
+        # Now the preconditioner operator
+        a_prec = (inner(2*mu*sym(grad(u)), sym(grad(v)))*dx  
+                  + (1/lmbda + 1/(2*mu))*inner(pT, qT)*dx)
+
+        # Add the eq tested with networks
+        for j in range(nnets):
+            a_prec =  a_prec + (1/lmbda)*inner(alphas[j]*qs[j], pT)*dx
+            # The diagonal part
+            a_prec = a_prec + (inner(cs[j]*ps[j], qs[j])*dx +
+                               tau*inner(Ks[j]*grad(ps[j]), grad(qs[j]))*dx +
+                               (1/lmbda)*sum(inner(alphas[i]*ps[i], qs[j])*dx for i in range(nnets)) +
+                               sum(tau*inner(Ts[j, i]*(ps[j] - ps[i]), qs[j])*dx for i in range(nnets) if i != j))
+
+        #a_prec = a_prec
+        #+ inner(tau*beta_SAS*ps[2],qs[2])*self.ds(1)
+        #+ inner(tau*beta_VEN*ps[2],qs[2])*self.ds(2)
+        #+ inner(tau*beta_SAS*ps[2],qs[2])*self.ds(3)
+
+        #Initial RHS 
+        g = Constant(self.g[0][0]) #Source term
+
+        L = (
+        - inner(tau*g,qs[0])*dx
+        #+ inner(-n*p_SAS,v)*self.ds(1)
+        + inner(-n*p_VEN,v)*self.ds(2)
+        #- inner(tau*beta_SAS*p_SAS,qs[2])*self.ds(1)
+        #- inner(tau*beta_VEN*p_VEN,qs[2])*self.ds(2)
+        #- inner(tau*beta_SAS*p_SAS,qs[2])*self.ds(3)
+        )
+
+        wh_ = Function(W)
+        
+        ic = Constant(sum([(0, 0, 0),  
+                           tuple(self.p_initial[net] for net in range(1+self.numPnetworks))], ()))
+        print(ic.ufl_shape)
+        wh_ = interpolate(ic, W)
+
+
+        pT_, *ps_ = split(wh_.sub(1))       
+
+
+        #Add terms from the previous timestep
+        for j in range(nnets): 
+            L = L - (1/lmbda)*inner(alphas[j]*qs[j], pT_)*dx
+            # The diagonal part
+            L = L - (inner(cs[j]*ps_[j], qs[j])*dx +
+                     (1/lmbda)*sum(inner(alphas[i]*ps_[i], qs[j])*dx for i in range(nnets)))
+
+        
+        B, _ = assemble_system(a_prec, L, self.bcs_D)
+        
+        # For dealing with the need to reassemble b in a time loop we do
+        # things a bit differently 
+        assembler = SystemAssembler(a, L, self.bcs_D)
+
+        return assembler, W, B, wh_, g, p_SAS, p_VEN
+
+
+
+    def get_system_pureNeumann(self,n,getMesh =False):
+        '''MPET biot with 3 networks. Return system to be solved with PETSc'''
+        # For simplicity we consider a stationary problem and displacement
+        # and network pressures are fixed to 0 on the entire boundary
+
+        if getMesh:
+            mesh = self.mesh
+        else:
+            #mesh = BoxMesh(Point((0,0,0)),Point((40,40,40)),n,n,n)
+            mesh = UnitCubeMesh(n,n,n)
             self.mesh = mesh
             self.ds = ds(mesh)
 
@@ -2217,15 +2414,11 @@ class MPET:
 
         self.bcs_D = []
        
-        p_VENOUS = self.boundary_conditionsP[(2, 1)]["Dirichlet"]
+        #p_VENOUS = self.boundary_conditionsP[(2, 1)]["Dirichlet"]
 
-        self.bcs_D.extend([DirichletBC(W.sub(1).sub(2), p_VENOUS, self.boundary_markers, 1,)])
+        #self.bcs_D.extend([DirichletBC(W.sub(1).sub(2), p_VENOUS, self.boundary_markers, 1,)])
         self.bcs_D.extend([DirichletBC(W.sub(1).sub(net), Constant(0), "on_boundary") for net in range(1,4)])
         
-        #beta_SAS, P_sas = self.boundary_conditionsP[(3, 1)]["RobinWK"]
-        #beta_VEN, P_ven = self.boundary_conditionsP[(3, 2)]["RobinWK"]
-        #self.windkessel_terms.append(P_sas)
-        #self.windkessel_terms.append(P_ven)
         
         mu, lmbda = Constant(self.mu), Constant(self.Lambda)
         alphas = Constant((self.alpha_val[0], self.alpha_val[1],self.alpha_val[2]))
@@ -2237,13 +2430,14 @@ class MPET:
                        (self.gamma[1,0], 0, self.gamma[1,2]),
                        (self.gamma[2,0], self.gamma[2,1], 0)))
 
+
         # The first of the pressure is the total pressure, the rest ones
         # are networks
         pT, *ps = split(p)
         qT, *qs = split(q)
 
-        self.T = 1
-        self.numTsteps = 1
+        self.T = 4
+        self.numTsteps = 400
         self.dt = float(self.T/self.numTsteps)
         tau = Constant(self.dt)
 
@@ -2263,8 +2457,6 @@ class MPET:
                      (1/lmbda)*sum(inner(alphas[i]*ps[i], qs[j])*dx for i in range(nnets)) +
                     sum(tau*inner(Ts[j, i]*(ps[j] - ps[i]), qs[j])*dx for i in range(nnets) if i != j))
 
-        #a = a - inner(beta_SAS*ps[2]*qs[2])*self.ds(1) - inner(beta_VEN*ps[2]*qs[2])*self.ds(2)
-        #a_prec = a_prec + inner(beta_SAS*ps[2]*qs[2])*self.ds(1) + inner(beta_VEN*ps[2]*qs[2])*self.ds(2)
         if self.LM:
             # Orthogonality constraints
             basis = rigid_motions.rm_basis(mesh)
@@ -2289,6 +2481,7 @@ class MPET:
                                sum(tau*inner(Ts[j, i]*(ps[j] - ps[i]), qs[j])*dx for i in range(nnets) if i != j))
 
         if self.LM:
+        
             for i, zi in enumerate(basis):
                 a_prec += inner(phis[i]*zi, psis[i]*zi)*dx
                 for j, zj in enumerate(basis[i+1:], i+1):
@@ -2298,16 +2491,17 @@ class MPET:
         #Initial RHS 
         g = Constant(self.g[0][0]) #Source term
 
-        p_SAS = Constant(10)
-        p_VEN = Constant(10)
+        p_SAS = Constant(self.p_BC_initial[0])
+        p_VEN = Constant(self.p_BC_initial[1])
 
-        #g = Expression('A*(1-cos(2*pi*t))',degree=2,A=0.001,t=0.0)
-        r = SpatialCoordinate(mesh)
-    
-        L = inner(r,v)*dx # - inner(g,qs[0])*dx + inner(-n*p_SAS,v)*self.ds(1) + inner(-n*p_VEN,v)*self.ds(2)
+        L =  - tau*inner(g,qs[0])*dx + inner(-n*p_SAS,v)*self.ds(1) + inner(-n*p_VEN,v)*self.ds(2)
 
-        up_ = Function(W)
-        pT_, *ps_ = split(up_.sub(1))       
+        ic = Constant(sum([(0, 0, 0),  
+                           tuple(self.p_initial[net] for net in range(1+self.numPnetworks))], ()))
+        print(ic.ufl_shape)
+        wh_ = interpolate(ic, W)
+
+        pT_, *ps_ = split(wh_.sub(1))       
 
 
         #Add terms from the previous timestep
@@ -2324,7 +2518,7 @@ class MPET:
         # things a bit differently 
         assembler = SystemAssembler(a, L, self.bcs_D)
 
-        return assembler, W, B, up_, g, p_SAS, p_VEN
+        return assembler, W, B, wh_, g, p_SAS, p_VEN
 
 
     def SolvePETSC(self):
@@ -2343,29 +2537,36 @@ class MPET:
             xdmfP[i].parameters["flush_output"]=True
 
         getMesh = True
-        self.LM = True
+        self.removeRM = False #True if pure neumann for displacements
+        self.LM = False #True if using Lagrange Multipliers for RM removal
 
-        assembler, W, B, up_, g, p_SAS, p_VEN = self.get_system(8,getMesh)
+        assert self.removeRM or self.removeRM is False and self.LM is False, "Dont need LM if system is non-singular"
 
+        if self.removeRM:
+            assembler, W, B, wh_, g, p_SAS, p_VEN = self.get_system_pureNeumann(8,getMesh)
+        else: 
+            assembler, W, B, wh_, g, p_SAS, p_VEN = self.get_system_fixed(8,getMesh)
         mesh = W.mesh()
+
+        if self.removeRM:
         
-        # RM basis as expressions
-        basis = rigid_motions.rm_basis(mesh)
-        # we want to represent RM modes in W
-        U = W.sub(0).collapse()
+            # RM basis as expressions
+            basis = rigid_motions.rm_basis(mesh)
+            # we want to represent RM modes in W
+            U = W.sub(0).collapse()
 
-        basis_W = []
-        for z in basis:
-            zU = interpolate(z, U)  # Get them in the displacement space
-            zW = Function(W)        # In W the modes that the form (z, 0)
-            assign(zW.sub(0), zU)   # where 0 is for all the pressure spaces
-            basis_W.append(zW.vector())
+            basis_W = []
+            for z in basis:
+                zU = interpolate(z, U)  # Get them in the displacement space
+                zW = Function(W)        # In W the modes that the form (z, 0)
+                assign(zW.sub(0), zU)   # where 0 is for all the pressure spaces
+                basis_W.append(zW.vector())
 
-        # Nullspace, here we want l^2 orthogonality
-        basis_W = rigid_motions.orthogonalize_gs(basis_W, A=None)
+            # Nullspace, here we want l^2 orthogonality
+            basis_W = rigid_motions.orthogonalize_gs(basis_W, A=None)
 
-        # Remove RM from the RHS
-        Z = VectorSpaceBasis(basis_W)
+            # Remove RM from the RHS
+            Z = VectorSpaceBasis(basis_W)
 
         comm = W.mesh().mpi_comm()
         # Before the time loop we can get the A once and for all
@@ -2376,22 +2577,23 @@ class MPET:
         # In the time loop suppose we do changes that modify bc values etc
         # so we need to reassemble
         assembler.assemble(b)
-
-        if not self.LM:
+        
+        if self.removeRM and not self.LM:
             # Orthogonalize the newly filled vector
             Z.orthogonalize(b)
 
 
         solver = PETScKrylovSolver()
-        solver.parameters['error_on_nonconvergence'] = False
+        solver.parameters['error_on_nonconvergence'] = True
         ksp = solver.ksp()
 
-        # Attach the nullspace to the system operators
-        # NOTE: I put it also to the preconditioner in cases it might help
-        # AMG later
-        Z_ = PETSc.NullSpace().create([as_backend_type(z).vec() for z in basis_W])
-        A_, B_ = (as_backend_type(mat).mat() for mat in (A, B))
-        [mat.setNearNullSpace(Z_) for mat in (A_, B_)]
+        if self.removeRM:
+            # Attach the nullspace to the system operators
+            # NOTE: I put it also to the preconditioner in cases it might help
+            # AMG later
+            Z_ = PETSc.NullSpace().create([as_backend_type(z).vec() for z in basis_W])
+            A_, B_ = (as_backend_type(mat).mat() for mat in (A, B))
+            [mat.setNearNullSpace(Z_) for mat in (A_, B_)]
  
         solver.set_operators(A, B)
 
@@ -2404,7 +2606,8 @@ class MPET:
         # Only apply preconditioner
         OptDB.setValue('fieldsplit_0_ksp_type', 'preonly')
         OptDB.setValue('fieldsplit_1_ksp_type', 'preonly')
-        OptDB.setValue('fieldsplit_2_ksp_type', 'preonly')
+        if self.LM:
+            OptDB.setValue('fieldsplit_2_ksp_type', 'preonly')
 
         # Set the splits
         pc = ksp.getPC()
@@ -2420,17 +2623,17 @@ class MPET:
             OptDB.setValue('fieldsplit_2_pc_type', 'jacobi')    
         else:
             assert len(splits) == 2
-            OptDB.setValue('fieldsplit_0_pc_type', 'hypre')
-            OptDB.setValue('fieldsplit_0_pc_hypre_boomeramg_strong_threshold', '0.7')
-            OptDB.setValue('fieldsplit_0_pc_hypre_boomeramg_coarsen_type','HMIS')
-            OptDB.setValue('fieldsplit_0_pc_hypre_boomeramg_interp_type','ext+i')
+            OptDB.setValue('fieldsplit_0_pc_type', 'lu')
+            #OptDB.setValue('fieldsplit_0_pc_hypre_boomeramg_strong_threshold', '0.65')
+            #OptDB.setValue('fieldsplit_0_pc_hypre_boomeramg_coarsen_type','HMIS')
+            #OptDB.setValue('fieldsplit_0_pc_hypre_boomeramg_interp_type','ext+i')
         
         
 
         OptDB.setValue('fieldsplit_1_pc_type', 'hypre')  # AMG in cbc block
-        #OptDB.setValue('fieldsplit_1_pc_hypre_boomeramg_strong_threshold', '0.7')
-        #OptDB.setValue('fieldsplit_1_pc_hypre_boomeramg_coarsen_type','HMIS')
-        #OptDB.setValue('fieldsplit_1_pc_hypre_boomeramg_interp_type','ext+i')
+        OptDB.setValue('fieldsplit_1_pc_hypre_boomeramg_strong_threshold', '0.77')
+        OptDB.setValue('fieldsplit_1_pc_hypre_boomeramg_coarsen_type','HMIS')
+        OptDB.setValue('fieldsplit_1_pc_hypre_boomeramg_interp_type','ext+i')
 
 
         OptDB.setValue('ksp_norm_type', 'preconditioned')
@@ -2441,7 +2644,7 @@ class MPET:
         OptDB.setValue('ksp_converged_reason', None)
         # NOTE: minres does not support unpreconditioned
         OptDB.setValue('ksp_atol', 1E-10)
-        OptDB.setValue('ksp_rtol', 1E-10)
+        OptDB.setValue('ksp_rtol', 1E-20)
         OptDB.setValue('ksp_initial_guess_nonzero', '1')
         
         # Use them!
@@ -2453,7 +2656,11 @@ class MPET:
         p_SAS_f = self.p_BC_initial[1]
         p_SP_f = self.p_BC_initial[2]
 
-        wh = Function(W)
+       
+        ic = Constant(sum([(0, 0, 0),  
+                           tuple(self.p_initial[net] for net in range(1+self.numPnetworks))], ()))
+        print(ic.ufl_shape)
+        wh = interpolate(ic, W)
 
         self.m = assemble(g*dx(self.mesh))
         
@@ -2461,10 +2668,9 @@ class MPET:
 
         dV_PREV_SAS = 0.0
         dV_PREV_VEN = 0.0
-
                 
         while t < self.T:
-
+            
             starttime = timeit.default_timer()
             solver.solve(wh.vector(), b)
             print("System solved in {} seconds".format(timeit.default_timer() - starttime))
@@ -2474,22 +2680,23 @@ class MPET:
             else:
                 u,p = wh.split(deepcopy = True)
 
-            for i in range(6):
-                print("Rigid motion:", assemble(inner(u, basis[i])*dx))
+            if self.removeRM and not self.LM:
+                for i in range(6):
+                    print("Rigid motion:", assemble(inner(u, basis[i])*dx))
+                    
+                Z.orthogonalize(wh.vector())
+                u,p = wh.split(deepcopy = True)
+                
+                for i in range(6):
+                    print("Rigid motion:", assemble(inner(u, basis[i])*dx))
         
-      
-            
             xdmfU.write(u, t)
             for j in range(self.numPnetworks+1):
                 xdmfP[j].write(p.sub(j), t)
 
-            results = self.generate_diagnostics(u,p.sub(0),p.sub(1),p.sub(2),p.sub(3))
+            results = self.generate_diagnosticsPETSc(u,p)
 
-            dV = assemble(div(u)*dx)
             self.m = assemble(g*dx(self.mesh))
-        
-            print("Div u:", dV)
-
             results["total_inflow"] = float(self.m)
 
             results["p_SAS"] = p_SAS_f
@@ -2516,276 +2723,24 @@ class MPET:
             dV_PREV_VEN = results["dV_VEN"]
 
             pickle.dump(results, open("%s/data_set/qois_%d.pickle" % (self.filesave, self.i), "wb"))
-            
+
             t += self.dt
             self.i += 1
+            if self.i > self.numTsteps:
+                break
+            
+            g.assign(Constant(self.g[0][self.i]))
 
-            gScale = 1
-            g.assign(Constant(self.g[0][i]*gScale))
-
-            up_.vector()[:] = wh.vector()[:] 
+            wh_.vector()[:] = wh.vector()[:] 
 
             progress += 1
 
             assembler.assemble(b)
-            
-            if not self.LM:
+
+            print("Norm l2 b:",norm(b, 'l2'))
+
+            if self.removeRM and not self.LM:
                 # Orthogonalize the newly filled vector
                 Z.orthogonalize(b)
 
-
-    def get_systemLM_test(self,mesh):
-        '''MPET biot with 3 networks. Return system to be solved with PETSc'''
-        cell = mesh.ufl_cell()
-
-        Velm = VectorElement('Lagrange', cell, 2)
-        Qi_elm = FiniteElement('Lagrange', cell, 1)  # For one pressure
-        Qelm = MixedElement([Qi_elm]*4)
-        
-        Zelm = VectorElement('Real', cell, 0, dim=6)
-        Welm = MixedElement([Velm, Qelm, Zelm]) 
-        
-        W = FunctionSpace(mesh, Welm)
-        u, p, phis = TrialFunctions(W)
-        v, q, psis = TestFunctions(W)
-        
-        bcs = []
-        # Add the network ones
-        bcs.extend([DirichletBC(W.sub(1).sub(net), Constant(0), 'on_boundary')
-                for net in range(1, 4)])
-        """
-        mu, lmbda = Constant(548.43), Constant(90856.6)
-        
-        alphas = Constant((0.4, 0.3, 0.3))
-        cs = Constant((2.6e-4, 1.5e-4, 2.6e-3))
-        Ks = Constant((0.0374,0.0374 , 1.435e-5))
-        # Exchange matrix; NOTE: I am not sure about the sign here
-        Ts = Constant(((0, 0.001, 0.0001),
-        (0.001, 0, 0.0),
-        (0.0001, 0.0, 0)))
-        """
-
-        # Some made up parameters
-        mu, lmbda = Constant(2), Constant(4)
-        alphas = Constant((0.5, 0.5, 0.5))
-        cs = Constant((0.1, 0.2, 0.3))
-        Ks = Constant((1, 2, 3))
-        # Exchange matrix; NOTE: I am not sure about the sign here
-        Ts = Constant(((0, 0.1, 0.2),
-                       (0.1, 0, 0.3),
-                       (0.2, 0.3, 0)))
-        T = 4 #Total seconds
-        N = 200 #Number of timesteps
-        
-        tau = Constant(T/N)
-        
-        # The first of the pressure is the total pressure, the rest ones
-        # are networks
-        pT, *ps = split(p)
-        qT, *qs = split(q)
-        
-        nnets = len(ps)
-        a = (inner(2*mu*sym(grad(u)), sym(grad(v)))*dx + inner(pT, div(v))*dx
-             + inner(qT, div(u))*dx - (1/lmbda)*inner(pT, qT)*dx - (1/lmbda)*sum(inner(alphas[i]*ps[i], qT)*dx for i in range(nnets)))
-        # Add the eq tested with networks
-        for j in range(nnets):
-            a = a - (1/lmbda)*inner(alphas[j]*qs[j], pT)*dx
-            # The diagonal part
-            a = a - (inner(cs[j]*ps[j], qs[j])*dx +
-                     tau*inner(Ks[j]*grad(ps[j]), grad(qs[j]))*dx +
-                     (1/lmbda)*sum(inner(alphas[i]*ps[i], qs[j])*dx for i in range(nnets)) +
-                     sum(tau*inner(Ts[j, i]*(ps[j] - ps[i]), qs[j])*dx for i in range(nnets) if i != j))
-        # Orthogonality constraints
-        basis = rigid_motions.rm_basis(mesh)
-        for i, zi in enumerate(basis):
-            a += phis[i]*inner(v, zi)*dx
-            a += psis[i]*inner(u, zi)*dx
-
-        # Now the preconditioner operator
-        # NOTE: here we add a mass matrix to the leading block in order to obtain
-        # non-singular problem
-        a_prec = (inner(2*mu*sym(grad(u)), sym(grad(v)))*dx + inner(2*mu*u, v)*dx 
-                  + (1/lmbda + 1/2/mu)*inner(pT, qT)*dx)
-        # Add the eq tested with networks
-        for j in range(nnets):
-            a_prec = a_prec + (1/lmbda)*inner(alphas[j]*qs[j], pT)*dx
-            # The diagonal part
-            a_prec = a_prec + (inner(cs[j]*ps[j], qs[j])*dx +
-                               inner(Ks[j]*grad(ps[j]), grad(qs[j]))*dx +
-                               (1/lmbda)*sum(inner(alphas[i]*ps[i], qs[j])*dx for i in range(nnets)) +
-                               sum(inner(Ts[j, i]*(ps[j] - ps[i]), qs[j])*dx for i in range(nnets) if i != j))
-        # LM part
-        for i, zi in enumerate(basis):
-            a_prec += inner(phis[i]*zi, psis[i]*zi)*dx
-            for j, zj in enumerate(basis[i+1:], i+1):
-                a_prec += inner(phis[i]*zi, psis[j]*zj)*dx
-                a_prec += inner(psis[i]*zi, phis[j]*zj)*dx            
-
-        #g = Constant(self.g[0][0])
-        g = Expression('A*(1-sin(2*pi*t))',degree=2,A=0.0001,t=0.0)
-
-        L =  - inner(g,qs[0])*dx #+ inner(-n*p_SAS,v)*ds
-        
-        wh_ = Function(W)
-        pT_, *ps_ = split(wh_.sub(1))       
-    
-        #Add terms from the previous timestep 
-        for j in range(nnets): 
-            L = L - (1/lmbda)*inner(alphas[j]*qs[j], pT_)*dx
-            # The diagonal part
-            L = L - (inner(cs[j]*ps_[j], qs[j])*dx +
-                     (1/lmbda)*sum(inner(alphas[i]*ps_[i], qs[j])*dx for i in range(nnets)))
-
-    
-
-        B, _ = assemble_system(a_prec, L, bcs)
-        # For dealing with the need to reassemble b in a time loop we do
-        # things a bit differently
-        assembler = SystemAssembler(a, L, bcs)
-
-        return assembler, W, B, wh_, T, N, g
-    
-    def LM_PETSc_TEST(self):
-        xdmfU = XDMFFile("/home/asmund/dev/MPET-modelling/LM_PETSC_Testing/FEM_results/u.xdmf")
-        xdmfU.parameters["flush_output"]=True
-
-        xdmfP = []
-        
-        for i in range(4):
-            xdmfP.append(XDMFFile("/home/asmund/dev/MPET-modelling/LM_PETSC_Testing/FEM_results/p" + str(i) + ".xdmf"))
-            xdmfP[i].parameters["flush_output"]=True
-
-        mesh = UnitCubeMesh(8, 8, 8)
-        assembler, W, B, wh_, T, N, g = self.get_systemLM_test(self.mesh)
-        
-        mesh = W.mesh()
-        # RM basis as expressions
-        basis = rigid_motions.rm_basis(mesh)
-        # we want to represent RM modes in W
-        U = W.sub(0).collapse()
-        
-        basis_W = []
-        for z in basis:
-            zU = interpolate(z, U)  # Get them in the displacement space
-            zW = Function(W)        # In W the modes that the form (z, 0)
-            assign(zW.sub(0), zU)   # where 0 is for all the pressure spaces
-            basis_W.append(zW.vector())
-        # Nullspace, here we want l^2 orthogonality        
-        basis_W = rigid_motions.orthogonalize_gs(basis_W, A=None)
-        # Remove RM from the RHS
-        Z = VectorSpaceBasis(basis_W)
-
-        comm = W.mesh().mpi_comm()
-        # Before the time loop we can get the A once and for all
-        A = PETScMatrix(comm)
-        assembler.assemble(A)
-        
-        b = PETScVector(comm)
-        # In the time loop suppose we do changes that modify bc values etc
-        # so we need to reassemble
-        assembler.assemble(b)
-        
-        solver = PETScKrylovSolver()
-        solver.parameters['error_on_nonconvergence'] = False
-        ksp = solver.ksp()
-        
-        # Attach the nullspace to the system operators
-        # NOTE: I put it also to the preconditioner in cases it might help
-        # AMG later
-        Z_ = PETSc.NullSpace().create([as_backend_type(z).vec() for z in basis_W])
-        B_, = (as_backend_type(mat).mat() for mat in (B, ))
-        [mat.setNearNullSpace(Z_) for mat in (B_, )]
-        # Also the preconditioner can be constructed before the look
-        solver.set_operators(A, B)
-        
-        OptDB = PETSc.Options()    
-        OptDB.setValue('ksp_type', 'minres')
-        OptDB.setValue('pc_type', 'fieldsplit')
-        OptDB.setValue('pc_fieldsplit_type', 'additive')  # schur
-        OptDB.setValue('pc_fieldsplit_schur_fact_type', 'diag')   # diag,lower,upper,full
-        
-        # Only apply preconditioner
-        OptDB.setValue('fieldsplit_0_ksp_type', 'preonly')
-        OptDB.setValue('fieldsplit_1_ksp_type', 'preonly')
-        OptDB.setValue('fieldsplit_2_ksp_type', 'preonly')    
-        # Set the splits
-        pc = ksp.getPC()
-        pc.setType(PETSc.PC.Type.FIELDSPLIT)
-        splits = tuple((str(i), PETSc.IS().createGeneral(W.sub(i).dofmap().dofs()))
-                       for i in range(W.num_sub_spaces()))
-        pc.setFieldSplitIS(*splits)        
-        assert len(splits) == 3
-        
-
-        OptDB.setValue('fieldsplit_0_pc_type', 'gamg')
-        #OptDB.setValue('fieldsplit_0_pc_hypre_boomeramg_strong_threshold', '0.7')
-        #OptDB.setValue('fieldsplit_0_pc_hypre_boomeramg_coarsen_type','HMIS')
-        #OptDB.setValue('fieldsplit_0_pc_hypre_boomeramg_interp_type','ext+i')
-        
-        
-
-        OptDB.setValue('fieldsplit_1_pc_type', 'hypre')  # AMG in cbc block
-        OptDB.setValue('fieldsplit_1_pc_hypre_boomeramg_strong_threshold', '0.7')
-        OptDB.setValue('fieldsplit_1_pc_hypre_boomeramg_coarsen_type','HMIS')
-        OptDB.setValue('fieldsplit_1_pc_hypre_boomeramg_interp_type','ext+i')
-        
-        OptDB.setValue('fieldsplit_2_pc_type', 'jacobi')    
-        
-        OptDB.setValue('ksp_norm_type', 'preconditioned')
-        # Some generics
-        OptDB.setValue('ksp_view', None)
-        OptDB.setValue('ksp_monitor_true_residual', None)    
-        OptDB.setValue('ksp_converged_reason', None)
-        # NOTE: minres does not support unpreconditioned
-        OptDB.setValue('ksp_initial_guess_nonzero', '1')
-        OptDB.setValue('ksp_rtol', 1E-10)
-        OptDB.setValue('ksp_atol', 1E-10)
-        # Use them!
-        ksp.setFromOptions()
-        
-        
-        dt = float(T/N)
-        t = 0.0
-        
-        # Add progress bar
-        progress = Progress("Time-stepping", N)
-        set_log_level(LogLevel.PROGRESS)
-        wh = Function(W)
-        
-        z = rigid_motions.rm_basis(mesh)
-        self.i = 0
-        while t < T:
-            
-            
-            solver.solve(wh.vector(), b)
-        
-            u,p,phis = wh.split(deepcopy = True)
-            
-            xdmfU.write(u, t)
-            for j in range(4):
-                xdmfP[j].write(p.sub(j), t)
-                
-            dV = assemble(div(u)*dx)    
-            print("Div u:", dV)
-            
-            
-            
-            for i in range(6):
-                print("Rigid motion:", assemble(inner(u, z[i])*dx))
-
-            self.i += 1
-            t += dt
-            g.t = t
-            #g = Constant(self.g[0][i]*100)
-        
-                
-            totalInflow = assemble(g*dx(W.mesh())) 
-            print("Total inflow:", totalInflow) #Sanity check
-            
-        
-            wh_.vector()[:] = wh.vector()[:] 
-            
-            progress += 1
-            
-            assembler.assemble(b)
 
