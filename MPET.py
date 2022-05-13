@@ -46,8 +46,26 @@ class MPET:
         self.boundary_markers = boundary_markers
         self.boundary_conditionsU = boundary_conditionsU
         self.boundary_conditionsP = boundary_conditionsP
-        self.filesave = kwargs.get("file_save")
+        self.filesave = "results/{}".format(kwargs.get("file_save"))
         self.uNullspace = kwargs.get("uNullspace")
+        self.mesh_type = kwargs.get("GEOM")
+        self.fileStats = open("{}/stats.txt".format(self.filesave),"w")
+
+        if kwargs.get("description"):
+            self.description = kwargs.get("description")
+            self.fileStats.write(self.description)
+            self.fileStats.write('\n')
+            
+        
+        
+        self.Vol = assemble(1*dx(self.mesh))
+        self.dim = self.mesh.topology().dim()
+ 
+        
+        
+        self.Vol = assemble(1*dx(self.mesh))
+        self.dim = self.mesh.topology().dim()
+
         
         #Number of boundaries
         if kwargs.get("num_boundaries"):
@@ -59,7 +77,7 @@ class MPET:
         self.numPnetworks = kwargs.get("num_networks") 
         
 
-
+        
         self.plot_from = kwargs.get("plot_from")
         self.plot_to = kwargs.get("plot_to")
     
@@ -71,7 +89,7 @@ class MPET:
         self.element_type = kwargs.get("element_type")
         self.solverType = kwargs.get("solver")
         self.preconditioner = kwargs.get("preconditioner")
-        
+        self.uConditioner = kwargs.get("uConditioner")
 
         self.f_val = kwargs.get("f")
         self.rho = kwargs.get("rho")
@@ -86,7 +104,7 @@ class MPET:
         self.p_initial.insert(0,p_initial0)
         self.gamma = np.reshape(kwargs.get("gamma"),(self.numPnetworks,self.numPnetworks))
         self.K_val = []
-
+        
         for i in range(self.numPnetworks):
             self.gamma[i,i] = sum(self.gamma[i,:])
 
@@ -103,13 +121,10 @@ class MPET:
             
         
         self.sourceFile = kwargs.get("source_file")
-        self.scaleMean = kwargs.get("scale_mean")
         self.g = [self.GenerateNumpySeries(),None, None]
         self.Lambda = self.nu*self.E/((1+self.nu)*(1-2*self.nu))
         self.mu = self.E/(2*(1+self.nu))        
-        self.conversionP = 133.32 #Pressure conversion: mmHg to Pa
-        self.dim = self.mesh.topology().dim()
-
+        
         
         #Boundary parameters
         if kwargs.get("Compliance_sas"):
@@ -118,11 +133,7 @@ class MPET:
             self.C_VEN =  kwargs.get("Compliance_ven") 
         if kwargs.get("Compliance_spine"):
             self.C_SP =  kwargs.get("Compliance_spine") 
-
-        if kwargs.get("ScalePressure"): #For scaling CSF pressure on boundaries
-            self.Pscale =  kwargs.get("ScalePressure")
-        else:
-            self.Pscale = 1.0
+        self.Pscale = 1.0
 
         #For alternative model for ventricles
         self.L = kwargs.get("length")
@@ -134,6 +145,12 @@ class MPET:
         self.p_BC_initial = [kwargs.get("p_ven_initial"),kwargs.get("p_sas_initial")]
         self.p_BC_initial.append(kwargs.get("p_spine_initial"))
 
+        if kwargs.get("ICP"):
+            self.ICP = kwargs.get("ICP")
+        if kwargs.get("PVI"):
+            self.PVI = kwargs.get("PVI")
+        
+        self.p_vein = kwargs.get("p_vein")
         print("\nSetting up problem...\n")
 
         print("Generating UFL expressions\n")
@@ -1066,8 +1083,6 @@ class MPET:
         # Contains the integrals for the Robin boundaries, RHS
         self.integrals_R_R = []
 
-        #sigmoid = "1/(1+exp(-t + 4))"
-        #self.RampSource = Expression(sigmoid,t=0.0,degree=2)
         
         def a_u(u, v):
             return self.mu * (inner(grad(u), grad(v)) + inner(grad(u), nabla_grad(v))) * dx
@@ -1120,11 +1135,16 @@ class MPET:
                 
         if self.gamma.any(): #Add transfer terms
             print("Adding transfer terms")
-            for i in range(self.numPnetworks): 
-                for j in range(self.numPnetworks):
+            #transfer.append(self.gamma[0,1]*(p_[2]-p_[3])*q[2]*dx)
+            #transfer.append(self.gamma[1,0]*(p_[3]-p_[2])*q[3]*dx)
+            #transfer.append(self.gamma[0,2]*(p_[2]-p_[4])*q[2]*dx)
+            #transfer.append(self.gamma[2,0]*(p_[4]-p_[2])*q[4]*dx)
 
+            for i in range(self.numPnetworks):
+                for j in range(self.numPnetworks):
                     if self.gamma[i,j] and i != j:
                         transfer.append(self.gamma[i,j]*(p_[i+2]-p_[j+2])*q[i+2]*dx)
+             
         dotProdP = [c(alpha,p, q[1]) for alpha,p in zip(self.alpha, p_[1:])]
 
         DIMCLASS = self.dim + self.numPnetworks + 1 + dimZ  #For InitialConditions class
@@ -1186,7 +1206,7 @@ class MPET:
         A = assemble(lhs(F))
 
         up = Function(W)
-       
+        
         dV_PREV_SAS = 0.0
         dV_PREV_VEN = 0.0
       
@@ -1211,20 +1231,23 @@ class MPET:
                 xdmfP[j].write(up.sub(j+2), t)
 
 
-                results["total_inflow"] = float(self.m)
+            results["total_inflow"] = float(self.m)
 
-            results["p_SAS"] = p_SAS_f
-            results["p_VEN"] = p_VEN_f
-            results["p_SP"] = p_SP_f
+            results["p_SAS"] = p_SAS_f #NOTE THESE ARE EQUIVALENT FROM PREVIOUS TIMESTEP, NOT CURRENT 
+            results["p_VEN"] = p_VEN_f 
 
-            p_SAS_f, p_VEN_f,p_SP_f,Vv_dot,Vs_dot,Q_AQ,Q_FM = self.coupled_3P_model(dV_PREV_SAS,dV_PREV_VEN,results) 
+
+            #ICP, p_VEN_f,Vv_dot,Vs_dot,Q_AQ = self.coupled_2P_nonlinear_model(dV_PREV_SAS,dV_PREV_VEN,results) 
+            ICP, p_VEN_f, Vv_dot,Vs_dot,Q_AQ = self.coupled_2P_nonlinear_FANCY_model(dV_PREV_SAS,dV_PREV_VEN,results) 
             
-            self.update_windkessel_expr(p_SAS_f,p_VEN_f) # Update all terms dependent on the windkessel pressures
-            print("Pressure SAS:",p_SAS_f)
-            print("Pressure VEN:",p_VEN_f)
+
+            self.update_windkessel_expr(ICP + p_SAS_f ,ICP + p_VEN_f ) # Update all terms dependent on the windkessel pressures
+            print("Relative Pressure SAS:",p_SAS_f)
+            print("Relative Pressure VEN:",p_VEN_f)
 
             results["Q_AQ"] = Q_AQ
-            results["Q_FM"] = Q_FM
+
+            results["ICP"] = ICP
 
             results["Vv_dot"] = Vv_dot
             results["Vs_dot"] = Vs_dot
@@ -1239,7 +1262,145 @@ class MPET:
             up_n.assign(up)
             progress += 1
 
-    def plotResults(self,plotCycle = 0):
+
+
+    def printStatistics(self):
+
+        
+        initStats = int(self.numTsteps/self.T*self.plot_from)
+        endStats = int(self.numTsteps/self.T*self.plot_to)
+        print("Init from: ",initStats)
+        print("End at: ",endStats)
+
+        self.plot_from = int(self.plot_from)
+        self.plot_to = int(self.plot_to)
+
+        statCycles = int(self.plot_to - self.plot_from) #Assuming 1 second cycles
+
+        df = self.load_data()
+        names = df.columns
+        times = (df["t"].to_numpy())
+
+        Q_A = np.mean(df["G_a"][initStats:endStats] - df["TOTAL_OUTFLOW_N1"])
+
+        BV = df["TOTAL_OUTFLOW_N2"]
+        Q_V = np.mean(df["TOTAL_OUTFLOW_N2"][initStats:endStats])
+        T_av = np.mean(df["T12"][initStats:endStats])
+        T_ap = np.mean(df["T13"][initStats:endStats])
+        T_va = np.mean(df["T21"][initStats:endStats])
+        T_pa = np.mean(df["T31"][initStats:endStats])
+        if "T23" in df.keys():
+            T_vp = np.mean(df["T23"][initStats:endStats])
+            T_pv = np.mean(df["T32"][initStats:endStats])
+        else:
+            T_vp,T_pv = 0,0
+        Q_CSF = np.mean(df["TOTAL_OUTFLOW_N3"][initStats:endStats])
+
+        Q_VEN = np.mean(df["Q_VEN_N3"][initStats:endStats])
+        Q_SAS = np.mean(df["Q_SAS_N3"][initStats:endStats])
+
+        dt = statCycles/(endStats-initStats)
+
+        print("dt:", dt)
+
+        #ONLY WORKS FOR STEADY STATE
+        SV_AQ = sum(np.abs(df["Q_AQ"][initStats:endStats])*dt)/(statCycles*2)
+        if "Q_FM" in df.keys():
+            SV_FM = sum(np.abs(df["Q_FM"][initStats:endStats])*dt)/(statCycles*2)
+        else:
+            SV_FM = 0
+            Q_FM = -np.mean(df["Vs_dot"][initStats:endStats] + df["Q_SAS_N3"][initStats:endStats] - df["Q_AQ"][initStats:endStats])
+        q1_AVG = np.mean(df["q_avg_1"][initStats:endStats])
+        q2_AVG = np.mean(df["q_avg_2"][initStats:endStats])
+        q3_AVG = np.mean(df["q_avg_3"][initStats:endStats])
+
+        
+        flowStatsH = '\nFLOW STATISTICS\n'
+        flowStats = tabulate([['Total arterial inflow', Q_A,"mm^3/s"],
+                        ['Total venous outflow', Q_V,"mm^3/s"],
+                        ['Net CSF outflow', Q_CSF,"mm^3/s"],
+                        ['Net VENTRICULAR CSF outflow', Q_VEN,"mm^3/s"],
+                        ['Net SAS CSF outflow', Q_SAS,"mm^3/s"],
+                        ['Mean arterio-venous transfer',T_av,"mm^3/s"],
+                        ['Mean arterio-perivascular transfer',T_ap,"mm^3/s"],
+                        ['Mean venous-arterio transfer',T_va,"mm^3/s"],
+                        ['Mean perivascular-arterio transfer',T_pa,"mm^3/s"],
+                        ['Mean venous-perivascular transfer',T_vp,"mm^3/s"],
+                        ['Mean perivascular-venous transfer',T_pv,"mm^3/s"],
+                        ['Aqueductal Stroke Volume', SV_AQ,"mL/s"],
+                        ['Spinal Stroke Volume', SV_FM,"mL/s"],
+                        ['Mean bulk arteriole velocity', q1_AVG,"mm/s"],
+                        ['Mean bulk venous velocity', q2_AVG,"mm/s"],
+                        ['Mean bulk perivascular velocity', q3_AVG,"mm/s"]],                        
+                       headers=['Quantity', 'Value','Unit'])
+
+        print(flowStatsH)
+        print(flowStats)
+        self.fileStats.write('\n')
+        self.fileStats.write(flowStatsH)
+        self.fileStats.write('\n')
+        self.fileStats.write(flowStats)
+        
+
+        dV_max = max(df["dV"][initStats:endStats])
+        dV_min = min(df["dV"][initStats:endStats])
+
+        dV_peak = dV_max - dV_min
+
+        dispStatsH = "\nDISPLACEMENTS STATISTICS\n"
+        dispStats =tabulate([['Peak brain expansion', dV_max,"mm^3"],
+                        ['Peak brain contraction', dV_min,"mm^3"],
+                        ['Peak brain stroke volume', dV_peak,"mm^3"],
+                        ['Max tissue displacement', 0,"mm"]],
+                        headers=['Quantity', 'Value','Unit'])
+        print(dispStatsH)
+        print(dispStats)
+        self.fileStats.write('\n')
+        self.fileStats.write(dispStatsH)
+        self.fileStats.write('\n')
+        self.fileStats.write(dispStats)
+        self.fileStats.write('\n')
+        
+
+        p1_max = max(df["max_p_1"][initStats:endStats])
+        p1_min = min(df["min_p_1"][initStats:endStats])
+        p2_max = max(df["max_p_2"][initStats:endStats])
+        p2_min = min(df["max_p_2"][initStats:endStats])
+        p3_max = max(df["max_p_3"][initStats:endStats])
+        p3_min = min(df["min_p_3"][initStats:endStats])
+
+        ICP = np.mean(df["ICP"][initStats:endStats])
+        ICP_pulse = max(df["ICP"][initStats:endStats]) - min(df["ICP"][initStats:endStats])
+        p_VEN = np.mean(df["p_VEN"][initStats:endStats])
+    
+        
+        pressureStatsH = "\nPRESSURE STATISTICS\n"
+        pressureStats = tabulate([['Max arteriole pressure (temporal)',p1_max ,"Pa"],
+                        ['Min arteriole pressure (temporal)', p1_min,"Pa"],
+                        ['Mean arteriole pressure (temporal)', np.mean(df["mean_p_1"][initStats:endStats]),"Pa"],
+                        ['Arteriole pulse pressure (temporal)',p1_max - p1_min,"Pa"],
+                        ['Max venous pressure (temporal)', p2_max,"Pa"],
+                        ['Min venous pressure (temporal)', p2_min,"Pa"],
+                        ['Mean venous pressure (temporal)', np.mean(df["mean_p_2"][initStats:endStats]),"Pa"],
+                        ['Venous pulse pressure (temporal)',p2_max - p2_min,"Pa"],
+                        ['Max perivascular pressure (temporal)', p3_max,"Pa"],
+                        ['Min perivascular pressure (temporal)', p3_min,"Pa"],
+                        ['Mean perivascular pressure (temporal)', np.mean(df["mean_p_3"][initStats:endStats]),"Pa"],
+                        ['Perivascular pulse pressure (temporal)',p3_max - p3_min,"Pa"],
+                        ['Mean ICP (temporal)',ICP,"Pa"],
+                        ['Intracranial pulse pressure ',ICP_pulse,"Pa"],
+                        ['Mean relative ventricular pressure (temporal)',p_VEN,"Pa"]],
+                        headers=['Quantity', 'Value','Unit'])
+
+        print(pressureStatsH)
+        print(pressureStats)
+        self.fileStats.write('\n')
+        self.fileStats.write(pressureStatsH)
+        self.fileStats.write('\n')
+        self.fileStats.write(pressureStats)
+        
+
+    def plotResults(self):
 
         plotDir = "%s/plots/" %self.filesave
         initPlot = int(self.numTsteps/self.T*self.plot_from)
@@ -1263,8 +1424,11 @@ class MPET:
         pmax_figs, pmax_axs = pylab.subplots(figsize=(12, 8))
         pmin_figs, pmin_axs = pylab.subplots(figsize=(12, 8))
         pmean_figs, pmean_axs = pylab.subplots(figsize=(12, 8))
+        OUTFLOW_figs, OUTFLOW_axs = pylab.subplots(figsize=(12, 8))
         v_fig, v_ax = pylab.subplots(figsize=(12, 8))
+        q_fig, q_ax = pylab.subplots(figsize=(12, 8))
         t_fig, t_ax = pylab.subplots(figsize=(12, 8))
+        ICP_figs, ICP_axs = pylab.subplots(figsize=(12, 8))
         
         # Color code the pressures: red, purple and blue
         colors = ["crimson", "navy", "cornflowerblue"]
@@ -1331,22 +1495,46 @@ class MPET:
             pmean_axs.grid(True)
             pmean_axs.legend()
 
+        OUTFLOW_axs.plot(times[initPlot:endPlot], df["TOTAL_OUTFLOW_N2"][initPlot:endPlot], markers[0],
+                       color=colors[i-1], label="$Q_2$",)
+
+        OUTFLOW_axs.set_xlabel("time (s)")
+        OUTFLOW_axs.set_xticks(x_ticks)
+        OUTFLOW_axs.set_ylabel("Total outflow (mm$^3$/s)")
+        OUTFLOW_axs.grid(True)
+        OUTFLOW_axs.legend()
+
+
+
         pmax_figs.savefig(plotDir + "brain-p_max.png")
         pmin_figs.savefig(plotDir + "brain-p_min.png")
         pmean_figs.savefig(plotDir + "brain-p_avg.png")
+        pmean_figs.savefig(plotDir + "brain-p_avg.png")
+        OUTFLOW_figs.savefig(plotDir + "brain-outflow.png")
 
 
         
         # Plot average compartment velocity (avg v_i)
         for i in range(1,self.numPnetworks+1):
-                v_ax.plot(times[initPlot:endPlot], df["v%d_avg" % i][initPlot:endPlot], markers[0], color=colors[i-1],
+                q_ax.plot(times[initPlot:endPlot], df["q_avg_%d" % i][initPlot:endPlot], markers[0], color=colors[i-1],
+                          label="$q_%d$" % i)
+        q_ax.set_xlabel("time (s)")
+        q_ax.set_xticks(x_ticks)
+        q_ax.set_ylabel("Average bulk velocity $v$ (mm/s)")
+        q_ax.grid(True)
+        q_ax.legend()
+        q_fig.savefig(plotDir + "brain-q_avg.png")
+
+        for i in range(1,self.numPnetworks+1):
+                v_ax.plot(times[initPlot:endPlot], df["v_avg_%d" % i][initPlot:endPlot], markers[0], color=colors[i-1],
                           label="$v_%d$" % i)
         v_ax.set_xlabel("time (s)")
         v_ax.set_xticks(x_ticks)
-        v_ax.set_ylabel("Average velocity $v$ (mm/s)")
+        v_ax.set_ylabel("Average norm?? velocity $v$ (mm/s)")
         v_ax.grid(True)
         v_ax.legend()
-        v_fig.savefig(plotDir + "brain-vs.png")
+        v_fig.savefig(plotDir + "brain-v_avg.png")
+
 
         if "Q_SAS_N3" in df.keys():
 
@@ -1376,10 +1564,10 @@ class MPET:
             Qv_figs.savefig(plotDir + "brain-Q_ven.png")
 
         
-        BA = df["G_a"]
+        BA = df["G_a"] - df["TOTAL_OUTFLOW_N1"]
         BV_axs.plot(times[initPlot:endPlot], BA[initPlot:endPlot], markers[0], color="darkmagenta",label="$B_{a}$")
-        if "Q_SAS_N2" in df.keys():
-            BV = df["Q_SAS_N2"] + df["Q_VEN_N2"]
+        if "TOTAL_OUTFLOW_N2" in df.keys():
+            BV = df["TOTAL_OUTFLOW_N2"]
                 
             # Plot outflow of venous blood
             BV_axs.plot(times[initPlot:endPlot], BV[initPlot:endPlot], markers[0], color="seagreen",label="$B_{v}$")
@@ -1394,7 +1582,7 @@ class MPET:
 
         # Plot Windkessel pressure
         if "p_SP" in df.keys():
-            PW_axs.plot(times[initPlot:endPlot], df["p_SP"][initPlot:endPlot], markers[1], color="cornflowerblue",label="$p_{SP}$")
+            PW_axs.plot(times[initPlot:endPlot],  df["p_SP"][initPlot:endPlot], markers[1], color="cornflowerblue",label="$p_{SP}$")
 
         if "p_SAS" in df.keys():
 
@@ -1405,23 +1593,35 @@ class MPET:
 
             PW_axs.set_xlabel("time (s)")
             PW_axs.set_xticks(x_ticks)
-            PW_axs.set_ylabel("P ($Pa$)")
+            PW_axs.set_ylabel("Relative Pressure ($Pa$)")
             PW_axs.grid(True)
             PW_axs.legend()
             PW_figs.savefig(plotDir + "brain-WK.png")
 
-        
+        if "ICP" in df.keys():
+            ICP_axs.plot(times[initPlot:endPlot], df["ICP"][initPlot:endPlot], markers[1], color="darkmagenta",label = "$ICP_s$")
+            ICP_axs.plot(times[initPlot:endPlot], df["ICP"][initPlot:endPlot] + df["p_VEN"][initPlot:endPlot], markers[1], color="seagreen" ,label = "$ICP_v$")
+
+            ICP_axs.set_xlabel("time (s)")
+            ICP_axs.set_xticks(x_ticks)
+            ICP_axs.set_ylabel("ICP ($Pa$)")
+            ICP_axs.grid(True)
+            ICP_axs.legend()
+            ICP_figs.savefig(plotDir + "brain-ICP.png")
+
         if "T12" in df.keys():
             # Plot transfer rates (avg v_i)
             t_ax.plot(times[initPlot:endPlot], df["T12"][initPlot:endPlot], markers[0], color="darkmagenta", label="$T_{12}$")
             t_ax.plot(times[initPlot:endPlot], df["T13"][initPlot:endPlot], markers[0], color="royalblue", label="$T_{13}$")
+            if "T32" in df.keys():
+                t_ax.plot(times[initPlot:endPlot], df["T32"][initPlot:endPlot], markers[0], color="seagreen", label="$T_{32}$")
             t_ax.set_xlabel("time (s)")
             t_ax.set_xticks(x_ticks)
-            t_ax.set_ylabel("Transfer rate ($L^2$-norm)")
+            t_ax.set_ylabel("Transfer rate (mm$^3$/s)")
             t_ax.grid(True)
             t_ax.legend()
             t_fig.savefig(plotDir + "brain-Ts.png")
-    
+        
         if "Q_AQ" in df.keys():
 
             Qaq_figs, Qaq_axs  = pylab.subplots(figsize=(12, 8)) #Outflow CSF to SAS
@@ -1468,10 +1668,12 @@ class MPET:
         print("div(u)*dx (mm^3) = ", dV)
         
         V = VectorFunctionSpace(self.mesh, 'CG' ,1)
+        Vds = Measure("ds", domain=V.mesh(), subdomain_data=self.boundary_markers)
+
+        #r = TestFunction(V) #For integration of vector field
 
         # Pressures
-        Vol = assemble(1*dx(self.mesh))
-        A = np.sqrt(Vol)
+        A = np.sqrt(self.Vol)
         for (i, p) in enumerate(p_list):
             results["max_p_%d" % (i)] = p.vector().max()
             print("Max pressure in network {}".format(i))
@@ -1479,21 +1681,33 @@ class MPET:
             results["min_p_%d" % (i)] = p.vector().min()
             print("Min pressure in network {}".format(i))
             print(results["min_p_%d" % (i)])
-            results["mean_p_%d" % (i)] = assemble(p*dx)/Vol
+            results["mean_p_%d" % (i)] = assemble(p*dx)/self.Vol
             
             if i > 0: # Darcy velocities
-                v = project(self.K[i-1]*grad(p),
+                v = project(-self.K[i-1]*grad(p),
                             V,
                             solver_type = self.solverType,
                             preconditioner_type = self.preconditioner,
                             )
                 v_avg = norm(v, "L2")/A
-                results["v%d_avg" % (i)] = v_avg
-        
+                results["v_avg_%d" % (i)] = v_avg
+                #results["max_v_%d" % (i)] = norm(v,'linf')
+                #results["min_v_%d" % (i)] = v.vector().min()
+                
+                results["q_avg_%d" % (i)] = assemble((v[0]**2+v[1]**2+v[2]**2)**(1/2)*dx)/self.Vol 
+                
+                results["TOTAL_OUTFLOW_N%d" %(i)] = assemble(div(v)*dx(V.mesh()))
+                print("Total outflow in network {}".format(i))
+                print(results["TOTAL_OUTFLOW_N%d" %(i)])
+                
                 #Calculate outflow for each network
-                results["Q_SAS_N%d" %(i)] = assemble(-self.K[i-1] * dot(grad(p), self.n) * self.ds(1))
-                results["Q_VEN_N%d" %(i)] = assemble(-self.K[i-1] * dot(grad(p), self.n) * self.ds(2)) + assemble(
-                -self.K[i-1] * dot(grad(p),self.n) * self.ds(3))
+                results["Q_SAS_N%d" %(i)] = assemble(-self.K[i-1]*dot(grad(p),self.n) * self.ds(1))
+                print("Total outflow in network {} from SAS ".format(i))
+                print(results["Q_SAS_N%d" % (i)])
+
+                results["Q_VEN_N%d" %(i)] = assemble(-self.K[i-1]*dot(grad(p),self.n) * self.ds(2)) + assemble(-self.K[i-1]*dot(grad(p),self.n) * self.ds(3))
+                print("Total outflow in network {} from ventricles".format(i))
+                print(results["Q_VEN_N%d" % (i)])
 
 
 
@@ -1502,12 +1716,15 @@ class MPET:
         results["dV_VEN"] = assemble(dot(u,self.n)*(self.ds(2) + self.ds(3)))
         
 
-        # Transfer rates
-        S = FunctionSpace(self.mesh, "CG", 1)
-        t12 = project(self.gamma[0,1]*(p_list[1]-p_list[2]),S)
-        t13 = project(self.gamma[0,2]*(p_list[1]-p_list[3]),S)
-        results["T12"] = norm(t12,"L2")
-        results["T13"] = norm(t13,"L2")
+        results["T12"] = assemble(self.gamma[0,1]*(p_list[1]-p_list[2])*dx)
+        results["T13"] = assemble(self.gamma[0,2]*(p_list[1]-p_list[3])*dx)
+        results["T21"] = assemble(self.gamma[1,0]*(p_list[1]-p_list[2])*dx)
+        results["T31"] = assemble(self.gamma[2,0]*(p_list[1]-p_list[3])*dx)
+
+        if self.gamma[1,2] > 0.0:
+            results["T23"] = assemble(self.gamma[1,2]*(p_list[2]-p_list[3])*dx)
+            results["T32"] = assemble(self.gamma[2,1]*(p_list[3]-p_list[2])*dx)
+        
         return results
  
     def generate_diagnosticsPETSc(self,u,p):
@@ -1519,36 +1736,45 @@ class MPET:
         print("div(u)*dx (mm^3) = ", dV)
         
         V = VectorFunctionSpace(self.mesh, 'CG' ,1)
-   
+        Vds = Measure("ds", domain=V.mesh(), subdomain_data=self.boundary_markers)
+
         ps_v = p.split(deepcopy=True)
         
-
         Vol = assemble(1*dx(self.mesh))
         A = np.sqrt(Vol)
 
-        for i in range(self.numPnetworks+1):
+        for i in range(len(ps_v)):
             results["max_p_%d" % (i)] = ps_v[i].vector().max()
             print("Max pressure in network {}".format(i))
             print(results["max_p_%d" % (i)])
             results["min_p_%d" % (i)] = ps_v[i].vector().min()
             print("Min pressure in network {}".format(i))
             print(results["min_p_%d" % (i)])
-            results["mean_p_%d" % (i)] = assemble(p.sub(i)*dx)/Vol
+            results["mean_p_%d" % (i)] = assemble(ps_v[i]*dx)/Vol
             
             if i > 0: # Darcy velocities
-                v = project(self.K[i-1]*grad(p.sub(i)),
+                v = project(self.K[i-1]*grad(ps_v[i]),
                             V,
-                            solver_type = self.solverType,
-                            preconditioner_type = self.preconditioner,
+                            #solver_type = self.solverType,
+                            #preconditioner_type = self.preconditioner,
                             )
                 v_avg = norm(v, "L2")/A
                 results["v%d_avg" % (i)] = v_avg
-        
-                #Calculate outflow for each network
-                results["Q_SAS_N%d" %(i)] = assemble(-self.K[i-1] * dot(grad(p.sub(i)), self.n) * self.ds(1))
-                results["Q_VEN_N%d" %(i)] = assemble(-self.K[i-1] * dot(grad(p.sub(i)), self.n) * self.ds(2)) + assemble(
-                -self.K[i-1] * dot(grad(p.sub(i)),self.n) * self.ds(3))
 
+                results["q_avg_%d" % (i)] = assemble((v[0]**2+v[1]**2+v[2]**2)**(1/2)*dx)/self.Vol
+                
+                results["TOTAL_OUTFLOW_N%d" %(i)] = assemble(div(v)*dx(V.mesh()))
+                print("Total outflow in network {}".format(i))
+                print(results["TOTAL_OUTFLOW_N%d" %(i)])
+                
+                #Calculate outflow for each network
+                results["Q_SAS_N%d" %(i)] = assemble(-self.K[i-1]*dot(grad(p),self.n) * self.ds(1))
+                print("Total outflow in network {} from SAS ".format(i))
+                print(results["Q_SAS_N%d" % (i)])
+
+                results["Q_VEN_N%d" %(i)] = assemble(-self.K[i-1]*dot(grad(p),self.n) * self.ds(2)) + assemble(-self.K[i-1]*dot(grad(p),self.n) * self.ds(3))
+                print("Total outflow in network {} from ventricles".format(i))
+                print(results["Q_VEN_N%d" % (i)])
 
 
         results["G_a"] = self.m
@@ -1558,47 +1784,36 @@ class MPET:
 
         # Transfer rates
         S = FunctionSpace(self.mesh, "CG", 1)
-        t12 = project(self.gamma[0,1]*(p.sub(1)-p.sub(2)),S)
-        t13 = project(self.gamma[0,2]*(p.sub(1)-p.sub(3)),S)
+        t12 = project(self.gamma[0,1]*(ps_v[1]-ps_v[2]),
+                        S,
+                        #solver_type = self.solverType,
+                        #preconditioner_type = self.preconditioner,
+                        )
+        
+        t13 = project(self.gamma[0,2]*(ps_v[1]-ps_v[3]),
+                                      S,
+                        #solver_type = self.solverType,
+                        #preconditioner_type = self.preconditioner,
+                        )
         results["T12"] = norm(t12,"L2")
         results["T13"] = norm(t13,"L2")
+
+        results["G_a"] = self.m
+        results["dV_SAS"] = assemble(dot(u,self.n)*self.ds(1))
+        results["dV_VEN"] = assemble(dot(u,self.n)*(self.ds(2) + self.ds(3)))
+        
+
+        results["T12"] = assemble(self.gamma[0,1]*(ps_v[1]-ps_v[2])*dx)
+        results["T13"] = assemble(self.gamma[0,2]*(ps_v[1]-ps_v[3])*dx)
+        results["T21"] = assemble(self.gamma[1,0]*(ps_v[1]-ps_v[2])*dx)
+        results["T31"] = assemble(self.gamma[2,0]*(ps_v[1]-ps_v[3])*dx)
+        results["T23"] = assemble(self.gamma[1,2]*(ps_v[2]-ps_v[3])*dx)
+        results["T32"] = assemble(self.gamma[2,1]*(ps_v[3]-ps_v[2])*dx)
+        
         return results
- 
+  
 
-    def simple_mass_WK_model(self,p_SAS,p_VEN,results):
-        """
-        This model couples the ventricles and SAS. Ventricles are modeled with a mass
-        conservation expression and the SAS uses a Windkessel model.
-        """
-
-        #Assume only flow from ECS flow out to the CSF filled cavities
-
-        scale = 10**(0)
-
-        print("Pressure for SAS: ", p_SAS)
-        print("Pressure for VEN: ", p_VEN)
-        #P_SAS is determined from Windkessel parameters
-        Q_SAS = results["Q_SAS_N3"]
-        print("Q_SAS:",Q_SAS)
-
-        #P_VEN is determined from volume change of the ventricles
-        Q_VEN = results["Q_VEN_N3"]
-        print("Q_VEN:",Q_VEN)
-
-        #Volume change of ventricles
-        V_dot = 1/self.dt*(results["dV_VEN"]-results["dV_VEN_PREV"])
-        print("V_dot:",V_dot)
-
-        K = np.pi*self.d**4/(128*self.L*self.mu_f[2]) #Poiseuille flow constant
-
-        p_SAS_next = p_SAS  + self.dt/self.C_SAS *( Q_SAS + V_dot + Q_VEN)*scale
- 
-        p_VEN_next = p_SAS_next + 1/K*(Q_VEN + V_dot)
-
-        return p_SAS_next, p_VEN_next,V_dot
-
-
-    def coupled_2P_model(self,p_SAS,p_VEN,results):
+    def coupled_2P_model(self,dV_SAS_prev,dV_VEN_prev,results):
         """
         This model couples the two pressures between the ventricles and SAS through the aqueduct, both compartments are modeled
         with Windkessel models.
@@ -1610,41 +1825,46 @@ class MPET:
         
         """
 
-        #Assume only flow from ECS flow out to the CSF filled cavities
+        p_SAS = results["p_SAS"]
+        p_VEN = results["p_VEN"]
+        
+        if (self.t[self.i] < 2.0):
+            VolScale = 1/10000 #mm³ to mL   
+        else:
+            VolScale = 1/1000 #mm³ to mL
 
+
+        #P_SAS is determined from Windkessel parameters
         Q_SAS = results["Q_SAS_N3"]
-        print("Q_SAS:",Q_SAS)
+        print("Q_SAS[mm³] :",Q_SAS)
 
+        #P_VEN is determined from volume change of the ventricles
         Q_VEN = results["Q_VEN_N3"]
-        print("Q_VEN:",Q_VEN)
-
-        #Scale to avoid instabilities
-        V_dotScale = 1/100
+        print("Q_VEN[mm³] :",Q_VEN)
 
         #Volume change of ventricles
-        Vv_dot = V_dotScale/self.dt*(results["dV_VEN"]-results["dV_VEN_PREV"])
+        Vv_dot = 1/self.dt*(results["dV_VEN"]-dV_VEN_prev)
         
-
         #Volume change of SAS
-        Vs_dot = V_dotScale/self.dt*(results["dV_SAS"]-results["dV_SAS_PREV"])
-
-        print("Rate of volume change, ventricles:",Vv_dot/V_dotScale)
-        print("Rate of volume change, SAS",Vs_dot/V_dotScale)
-
-        #Conductance Aqueduct
-        G_aq = np.pi*self.d**4/(128*self.L*self.mu_f[2]) #Poiseuille flow constant
+        Vs_dot = 1/self.dt*(results["dV_SAS"]-dV_SAS_prev)
         
-        Q_AQ = G_aq*(p_SAS - p_VEN)
-        print("Q_AQ:",Q_AQ)
-        b_SAS = p_SAS + self.dt/self.C_SAS * (Q_SAS + Vs_dot)
-        b_VEN = p_VEN + self.dt/self.C_VEN * (Q_VEN + Vv_dot)
+        print("Volume change VEN[mm³] :",Vv_dot)
+        print("Volume change SAS[mm³] :",Vs_dot)
+
+        #Conductance
+        G_aq = np.pi*self.d**4/(128*self.L*self.mu_f[2]) #Poiseuille flow constant
+        #G_aq = 5/133 #mL/mmHg to mL/Pa, from Ambarki2007
+        G_aq = G_aq*1/1000 #mm³/Pa to mL/Pa
+
+        b_SAS = p_SAS + self.dt/self.C_SAS * (Q_SAS + Vs_dot)* VolScale
+        b_VEN = p_VEN + self.dt/self.C_VEN * (Q_VEN + Vv_dot)* VolScale
 
         A_11 = 1 + self.dt*G_aq/self.C_SAS
         A_12 = -self.dt*G_aq/self.C_SAS
         A_21 = -self.dt*G_aq/self.C_VEN
         A_22 = 1 + self.dt*G_aq/self.C_VEN
         
-
+        
         b = np.array([b_SAS,b_VEN])
         A = np.array([[A_11, A_12],[A_21, A_22]])
 
@@ -1653,7 +1873,182 @@ class MPET:
         print("Pressure for SAS: ", x[0])
         print("Pressure for VEN: ", x[1])
 
-        return x[0], x[1],Vv_dot/V_dotScale,Vs_dot/V_dotScale,Q_AQ
+        # "Positive" direction upwards, same as baledent article
+        Q_AQ = G_aq*(p_SAS - p_VEN)
+
+        print("Q_AQ[mL]:",Q_AQ)
+
+
+        print("Pressure for SAS: ", x[0])
+        print("Pressure for ventricles: ", x[1])
+
+        deltaV = (Q_SAS + Vs_dot + Q_AQ)*VolScale
+
+        print("DeltaV: ",deltaV)
+
+        if (self.t[self.i] <= 1.0):
+            PVI = self.PVI*10 #mL   
+        else: 
+            PVI = self.PVI #mL
+
+        ICP = self.ICP*10**(deltaV*self.dt/PVI)
+
+        return x[0], x[1],Vv_dot ,Vs_dot ,Q_AQ, ICP
+
+    def coupled_2P_nonlinear_model(self,dV_SAS_prev,dV_VEN_prev,results):
+        """
+        This model couples the two pressures between the ventricles and SAS through the aqueduct, both compartments are modeled
+        with Windkessel models.
+
+        Solves using implicit (backward) Euler
+
+        ICP = p0*10^((Vs_dot + Q_SAS + G_aq * p_VEN)*dt/PVI)
+        dp_ven/dt = 1/C_ven(Vv_dot + Q_VEN - G_aq * p_VEN)
+        
+        """
+
+        p_VEN = results["p_VEN"]
+        
+        if (self.t[self.i] < 4.0):
+            VolScale = 1/10000 #mm³ to mL   
+        else:
+            VolScale = 1/1000 #mm³ to mL
+
+
+        #P_SAS is determined from Windkessel parameters
+        Q_SAS = results["Q_SAS_N3"]
+        print("Q_SAS[mm³] :",Q_SAS)
+
+        #P_VEN is determined from volume change of the ventricles
+        Q_VEN = results["Q_VEN_N3"]
+        print("Q_VEN[mm³] :",Q_VEN)
+
+        #Volume change of ventricles
+        Vv_dot = 1/self.dt*(results["dV_VEN"]-dV_VEN_prev)
+        
+        #Volume change of SAS
+        Vs_dot = 1/self.dt*(results["dV_SAS"]-dV_SAS_prev)
+        
+        print("Volume change VEN[mm³] :",Vv_dot)
+        print("Volume change SAS[mm³] :",Vs_dot)
+
+        #Conductance
+        G_aq = np.pi*self.d**4/(128*self.L*self.mu_f[2]) #Poiseuille flow constant
+        #G_aq = 5/133 #mL/mmHg to mL/Pa, from Ambarki2007
+        G_aq = G_aq*1/1000 #mm³/Pa to mL/Pa
+
+        
+        if (self.t[self.i] <= 1.0):
+            PVI = self.PVI*10 #mL   
+        else: 
+            PVI = self.PVI
+
+        if (self.t[self.i] < 3.0):
+            p_VEN = 0
+        else:
+            p_VEN = (VolScale*(Vv_dot + Q_VEN) + self.C_VEN/self.dt*p_VEN)/(self.C_VEN/self.dt+G_aq)
+
+        Q_AQ = -G_aq*p_VEN
+
+        # "Positive" direction upwards, same as baledent article
+        print("Q_AQ[mL]:",Q_AQ)
+
+        deltaV = (Q_SAS + Vs_dot )*VolScale - Q_AQ
+        print("DeltaV[ml]: ",deltaV)
+  
+        ICP = self.ICP*10**(deltaV*self.dt/PVI)
+
+
+        print("Pressure for SAS: ", ICP)
+        print("Pressure for VEN: ", ICP + p_VEN)
+
+        return ICP, p_VEN,Vv_dot ,Vs_dot ,Q_AQ
+
+    def coupled_2P_nonlinear_FANCY_model(self,dV_SAS_prev,dV_VEN_prev,results):
+        """
+        This model couples the two pressures between the ventricles and SAS through the aqueduct, both compartments are modeled
+        with Windkessel models.
+
+        Solves using implicit (backward) Euler
+
+        ICP = p0*10^((Vs_dot + Q_SAS + G_aq * p_VEN)*dt/PVI)
+        p_VEN = pv(10^((Vv_dot + Q_VEN + G_aq * p_VEN)*dt/PVI_v)-1)
+        
+        """
+
+        from scipy.optimize import fsolve
+
+        
+        if (self.t[self.i] < 4.0):
+            VolScale = 1/10000 #mm³ to mL   
+        else:
+            VolScale = 1/1000 #mm³ to mL
+
+        p_VEN = results["p_VEN"]
+        #P_SAS is determined from Windkessel parameters
+        Q_SAS = results["Q_SAS_N3"]
+        print("Q_SAS[mm³] :",Q_SAS)
+
+        #P_VEN is determined from volume change of the ventricles
+        Q_VEN = results["Q_VEN_N3"]
+        print("Q_VEN[mm³] :",Q_VEN)
+
+        #Volume change of ventricles
+        Vv_dot = 1/self.dt*(results["dV_VEN"]-dV_VEN_prev)
+        
+        #Volume change of SAS
+        Vs_dot = 1/self.dt*(results["dV_SAS"]-dV_SAS_prev)
+        
+        print("Volume change VEN[mm³] :",Vv_dot)
+        print("Volume change SAS[mm³] :",Vs_dot)
+
+        #Conductance
+        G_aq = np.pi*self.d**4/(128*self.L*self.mu_f[2]) #Poiseuille flow constant
+        #G_aq = 5/133 #mL/mmHg to mL/Pa, from Ambarki2007
+        G_aq = G_aq*1/1000 #mm³/Pa to mL/Pa
+
+        deltaVs = (Q_SAS + Vs_dot )*VolScale
+        print("DeltaVs[ml]: ",deltaVs)
+
+        deltaVv = (Q_VEN + Vv_dot )*VolScale
+        print("DeltaVv[ml]: ",deltaVv)
+ 
+
+        if (self.t[self.i] <= 1.0):
+            PVI = self.PVI*10 #mL   
+        else: 
+            PVI = self.PVI
+
+        PVI_v = 0.01
+        p0_v = 133 #1mmHG
+ 
+        def func(p):
+            ICP_s,p_VEN = p
+            return [ICP_s - self.ICP*10**((deltaVs + G_aq*p_VEN)*self.dt/PVI),p_VEN - PVI_v*(10**((deltaVv - G_aq*p_VEN)*self.dt/PVI_v)-1)]
+
+        ICPs,p_VEN = fsolve(func, [self.ICP, 0])
+
+
+        if (self.t[self.i] < 3.0):
+            ICPs,_ = fsolve(func, [self.ICP, 0])
+            p_VEN = 0
+        else:
+            ICPs,p_VEN = fsolve(func, [self.ICP, 0])
+
+
+        print("Pressure for SAS: ", ICPs)
+        print("Pressure for VEN: ", ICPs + p_VEN)
+
+        Q_AQ = -G_aq*p_VEN
+
+        # "Positive" direction upwards, same as baledent article
+        print("Q_AQ[mL]:",Q_AQ)
+
+
+
+        return ICPs, p_VEN, Vv_dot, Vs_dot ,Q_AQ
+
+
 
 
     def coupled_3P_model(self,dV_SAS_prev,dV_VEN_prev,results):
@@ -1672,7 +2067,7 @@ class MPET:
         p_VEN = results["p_VEN"]
         p_SP = results["p_SP"]
 
-        if (self.t[self.i] < 4.0):
+        if (self.t[self.i] < 2.0):
             VolScale = 1/10000 #mm³ to mL   
         else:
             VolScale = 1/1000 #mm³ to mL
@@ -1731,24 +2126,38 @@ class MPET:
         print("Pressure for ventricles: ", x[1])
         print("Pressure in spinal-SAS:", x[2])
 
-        return x[0], x[1],x[2],Vv_dot,Vs_dot,Q_AQ,Q_FM
+        deltaV = (Q_SAS + Vs_dot + Q_AQ)*VolScale
+
+        print("DeltaV: ",deltaV)
+
+        if (self.t[self.i] < 1.0):
+            PVI = self.PVI*10 #mL   
+        else:
+            PVI = self.PVI #mL
+
+        ICP = 1330*10**(deltaV*self.dt/PVI)
 
 
-    def coupled_3P_model_MK_constrained(self,p_SAS,p_VEN,p_SP,results):
+        return x[0], x[1],x[2],Vv_dot,Vs_dot,Q_AQ,Q_FM,ICP
+
+
+    def coupled_3P_nonlinear_model(self,dV_SAS_prev,dV_VEN_prev,results):
         """
-        This model calculates a 3-pressure lumped model for the SAS, ventricles and spinal-SAS compartments
-
-        Also adds a Monroe-Kellie (MK) constrain to the equation through a multiplier
+        This model couples the two pressures between the ventricles and SAS through the aqueduct, both compartments are modeled
+        with Windkessel models. The ICP is modelled by an exponential compliance
 
         Solves using implicit (backward) Euler
 
-        Equations:
-        dp_sas/dt = 1/C_sas(Vs_dot + Q_SAS + G_aq(p_VEN - p_SAS) + G_fm(p_SP-p_SAS))
-        dp_ven/dt = 1/C_ven(Vv_dot + Q_VEn + G_aq(p_SAS - p_VEN))
-        G_fm(p_SAS-p_SP) = Vs_dot + Q_SAS + G_aq(p_VEN - p_SAS))
+        dp_sas/dt = 1/C_sas(Vs_dot + Q_SAS + G_aq(p_VEN - p_SAS))
+        dp_ven/dt = 1/C_ven(Vv_dot + Q_VEN + G_aq(p_SAS - p_VEN))
+
+        ICP = p0*10^(dV*dt/PVI)
         
         """
 
+        p_SAS = results["p_SAS"]
+        p_VEN = results["p_VEN"]
+        
         if (self.t[self.i] < 4.0):
             VolScale = 1/10000 #mm³ to mL   
         else:
@@ -1764,128 +2173,56 @@ class MPET:
         print("Q_VEN[mm³] :",Q_VEN)
 
         #Volume change of ventricles
-        Vv_dot = 1/self.dt*(results["dV_VEN"]-results["dV_VEN_PREV"])
+        Vv_dot = 1/self.dt*(results["dV_VEN"]-dV_VEN_prev)
         
         #Volume change of SAS
-        Vs_dot = 1/self.dt*(results["dV_SAS"]-results["dV_SAS_PREV"])
+        Vs_dot = 1/self.dt*(results["dV_SAS"]-dV_SAS_prev)
         
-        
-        print("Volume change ventricles[mm³] :",Vv_dot)
+        print("Volume change VEN[mm³] :",Vv_dot)
         print("Volume change SAS[mm³] :",Vs_dot)
 
         #Conductance
         G_aq = np.pi*self.d**4/(128*self.L*self.mu_f[2]) #Poiseuille flow constant
-        #G_aq = 5/133 #mL/mmHg to mL/Pa, from Ambarki2007
         G_aq = G_aq*1/1000 #mm³/Pa to mL/Pa
-        G_fm = G_aq*10 #from Ambarki2007
 
-        # "Positive" direction upwards, same as baledent article
-        Q_AQ = G_aq*(p_SAS - p_VEN)
-        Q_FM = G_aq*(p_SP - p_SAS)
-       
-        print("Q_AQ[mL]:",Q_AQ)
-        print("Q_FM[mL]:",Q_FM)
+        b_SAS = p_SAS #+ self.dt/self.C_SAS * (Q_SAS)* VolScale
+        b_VEN = p_VEN + self.dt/self.C_VEN * (Q_VEN + Vv_dot)* VolScale
 
-
-        b_SAS = p_SAS + self.dt/self.C_SAS * (Q_SAS  + Vs_dot)* VolScale
-        b_VEN = p_VEN + self.dt/self.C_VEN * (Q_VEN + Vv_dot)  * VolScale
-        b_SP = (Vs_dot + Q_SAS) * VolScale
-        A_11 = 1 + self.dt*G_aq/self.C_SAS + self.dt*G_fm/self.C_SAS 
+        A_11 = 1 + self.dt*G_aq/self.C_SAS
         A_12 = -self.dt*G_aq/self.C_SAS
-        A_13 = - self.dt*G_fm/self.C_SAS
         A_21 = -self.dt*G_aq/self.C_VEN
         A_22 = 1 + self.dt*G_aq/self.C_VEN
-        A_23 = 0
-        A_31 = G_aq + G_fm 
-        A_32 = -G_aq
-        A_33 = -G_fm
-
-
-        b = np.array([b_SAS, b_VEN, b_SP])
-        A = np.array([[A_11, A_12, A_13],[A_21, A_22, A_23],[A_31, A_32, A_33]])
-        x = np.linalg.solve(A,b) #x_0 = p_SAS, x_1 = p_VEN, x_2 = p_SAS
-
-        print("Pressure for SAS: ", x[0])
-        print("Pressure for Ventricles: ", x[1])
-        print("Pressure for Spinal Cord: ", x[2])
-       
-        return x[0], x[1],x[2],Vv_dot,Vs_dot,Q_AQ,Q_FM
-
-
-    def coupled_3P_nonlinear_model(self,p_SAS,p_VEN,p_SP,results):
-        """
-        This model calculates a 3-pressure lumped model for the SAS, ventricles and spinal-SAS compartments
-
-        Solves using explicit (forward) Euler
-
-        Equations:
-        dp_sas/dt = 1/C_sas(Vs_dot + Q_SAS + G_aq(p_VEN - p_SAS) + G_fm(p_SP-p_SAS)
-        dp_ven/dt = 1/C_ven(Vv_dot + Q_VEN + G_aq(p_SAS - p_VEN))
-        dp_sp/dt = 1/C_sp(G_fm(p_SAS-p_SP))
         
-        """
+        
+        b = np.array([b_SAS,b_VEN])
+        A = np.array([[A_11, A_12],[A_21, A_22]])
 
-        if (self.t[self.i] < 4.0):
-            VolScale = 1/10000 #mm³ to mL   
+        if (self.t[self.i] < 3.0):
+            x = np.array([0.0,0.0])
         else:
-            VolScale = 1/1000 #mm³ to mL
-
-
-            #P_SAS is determined from Windkessel parameters
-        Q_SAS = results["Q_SAS_N3"]
-        print("Q_SAS[mm³] :",Q_SAS)
-
-        #P_VEN is determined from volume change of the ventricles
-        Q_VEN = results["Q_VEN_N3"]
-        print("Q_VEN[mm³] :",Q_VEN)
-
-        #Volume change of ventricles
-        Vv_dot = 1/self.dt*(results["dV_VEN"]-results["dV_VEN_PREV"])
-        
-        #Volume change of SAS
-        Vs_dot = 1/self.dt*(results["dV_SAS"]-results["dV_SAS_PREV"])
-        
-        
-        print("Vv_dot[mm³] :",Vv_dot)
-        print("Vs_dot[mm³] :",Vs_dot)
-
-        #Conductance
-        G_aq = 5/133 #mL/mmHg to mL/Pa, from Ambarki2007
-        G_fm = G_aq*10 #from Ambarki2007
+            x = np.linalg.solve(A,b) #x_0 = p_SAS, x_1 = p_VEN
 
         # "Positive" direction upwards, same as baledent article
-        Q_AQ = G_aq*(p_SAS - p_VEN)
-        Q_FM = G_fm*(p_SP - p_SAS)
+        Q_AQ = G_aq*(x[0] - x[1])
 
         print("Q_AQ[mL]:",Q_AQ)
-        print("Q_FM[mL]:",Q_FM)
-
-        E_1 = 1#[1/mL]
-        E_2 = 0.25
 
 
-        p_r = 0.0 #referance pressure, mmHg
-        
-        C_SAS = 1/(E_1*(p_SP-p_r))
-        C_VEN = 1/(E_1*(p_VEN-p_r))
-        C_SP = 1/(E_2*(p_SP-p_r))
+        deltaV = (Vs_dot + Q_SAS)*VolScale
 
-        print("C_SAS/C_VEN:",C_SAS)
-        print("C_SP:",C_SP)
+        print("DeltaV: ",deltaV)
 
-        
-        p_SAS_nn = p_SAS + self.dt/C_SAS * ((Q_SAS  + Vs_dot)* VolScale -Q_AQ + Q_FM)
-        p_VEN_nn = p_VEN + self.dt/C_VEN * ((Q_VEN + Vv_dot)  * VolScale + Q_AQ)
-        p_SP_nn = p_SP + self.dt/C_SP*(-Q_FM)
+        if (self.t[self.i] <= 1.0):
+            PVI = self.PVI*10 #mL   
+        else: 
+            PVI = self.PVI
 
-        x = np.array([p_SAS_nn,p_VEN_nn,p_SP_nn])
-        
-        print("Pressure for SAS: ", x[0])
-        print("Pressure for ventricles: ", x[1])
-        print("Pressure in spinal-SAS:", x[2])
+        ICP = self.ICP*10**(deltaV*self.dt/PVI)
+        print("Absolute pressure in SAS: ", x[0] + ICP)
+        print("Absolute pressure in ventricles: ", x[1] + ICP)
 
-        return x[0], x[1],x[2],Vv_dot,Vs_dot,Q_AQ,Q_FM
 
+        return x[0], x[1],Vv_dot ,Vs_dot ,Q_AQ, ICP
 
     def applyPressureBC_BLOCK(self,Q,p,q):
         
@@ -2045,46 +2382,15 @@ class MPET:
                  
     def generateUFLexpressions(self):
         import sympy as sym
-            
-        t = sym.symbols("t")
-
-        fx = 0.0 #self.f_val  # force term y-direction
-        fy = 0.0 #self.f_val  # force term y
-        fz = 0.0 
-        #p_initial0 =  sum([-x*y for x,y in zip(self.alpha_val,self.p_initial_val)])
-
-        RampSource = 0
-        variables = [
-            self.mu,
-            self.Lambda,
-            fx,
-            fy,
-            fz,
-            RampSource,
-        ]
-
-        variables = [sym.printing.ccode(var) for var in variables]  # Generate C++ code
-
-        UFLvariables = [
-            Expression(var, degree=0, t=0.0 ) for var in variables
-        ]  # Generate ufl varibles
- 
-
-        (
-            self.mu_UFL,
-            self.Lambda_UFL,
-            fx_UFL,
-            fy_UFL,
-            fz_UFL,
-            RS_UFL,
-        ) = UFLvariables
-
+        
         if self.dim == 2:
-            self.f = as_vector((fx, fy))
+            self.f = Constant((0,0))
         elif self.dim == 3:
-            self.f = as_vector((fx, fy, fz))
-
-        self.RampSource = RS_UFL 
+            self.f = Constant((0,0,0))
+            
+        self.mu_UFL = Constant(self.mu)
+        self.Lambda_UFL  = Constant(self.Lambda)
+            
         self.alpha = []
         self.c = []
         self.K = []
@@ -2120,37 +2426,65 @@ class MPET:
  
     def printSetup(self):
 
-        print("\n SOLVER SETUP\n")
-        print(tabulate([['Problem Dimension', self.dim],
-                        ['Number of networks', self.numPnetworks],
-                        ['Total time',self.T],
-                        ['Number of timesteps',self.numTsteps],
-                        ['Element type',self.element_type]],
+        
+        setupH = "\nSOLVER SETUP\n"
 
-                       headers=['Setting', 'Value']))
-
-    
-        print("\n DOMAIN PARAMETERS\n")
-        print(tabulate([['Young Modulus', self.E, 'Pa'],
+        setup = tabulate([['Problem Dimension', self.dim],
+                          ['Number of networks', self.numPnetworks],
+                          ['Number of boundaries', self.boundaryNum],
+                          ['Solver type', self.solverType],
+                          ['Total time',self.T],
+                          ['Number of timesteps',self.numTsteps],
+                          ['Element type',self.element_type],
+                          ['Mesh type',self.mesh_type],
+                          ['Volume of mesh', self.Vol]],
+                         headers=['Setting', 'Value']
+                        )
+        print(setupH)
+        print(setup)
+        self.fileStats.write(setupH)
+        self.fileStats.write('\n')
+        self.fileStats.write(setup)
+                    
+        paramH = "\nDOMAIN PARAMETERS\n"
+        param = tabulate([['Young Modulus', self.E, 'Pa'],
                         ['nu', self.nu, "--"],
                         ['lambda', self.Lambda, 'Pa'],
                         ['mu', self.mu, 'Pa'],
-                        ['rho', self.rho, "kg/m³"],
                         ['c', self.c_val, "1/Pa"],
-                        ['kappa', self.kappa, 'mm^2'],
+                        ['kappa', self.kappa, "mm^2"],
                         ['mu_f', self.mu_f, 'Pa*s'],
                         ['alpha', self.alpha_val],
                         ['gamma', self.gamma, "1/Pa"]],
-                       headers=['Parameter', 'Value', 'Unit']))
+                       headers=['Parameter', 'Value', 'Unit'])
 
+        print(paramH)
+        print(param)
+        self.fileStats.write('\n')
+        self.fileStats.write(paramH)
+        self.fileStats.write('\n')
+        self.fileStats.write(param)
+        self.fileStats.write('\n')
+        
 
-        print("\n BOUNDARY PARAMETERS\n")
-        print(tabulate([['Compliance SAS', self.C_SAS, 'mm^3/mmHg'],
+        bParamH = "\nBOUNDARY PARAMETERS\n"
+        bParam = tabulate([['Compliance SAS', self.C_SAS, 'mm^3/mmHg'],
                         ['Compliance Ventricles', self.C_VEN, 'mm^3/mmHg'],
+                        ['ICP baseline (p0)', self.ICP, 'Pa'],
+                        ['PVI', self.PVI, 'mL'],
+                        ['Venous back pressure', self.p_vein, 'Pa'],
                         ['beta SAS', self.beta_SAS, '--' ],
                         ['beta ventricles', self.beta_VEN, '--']],
-                        headers=['Parameter', 'Value', 'Unit']))
+                        headers=['Parameter', 'Value', 'Unit'])
 
+        print(bParamH)
+        print(bParam)
+        self.fileStats.write('\n')
+        self.fileStats.write(bParamH)
+        self.fileStats.write('\n')
+        self.fileStats.write(bParam)
+        self.fileStats.write('\n')
+        
     def update_time_expr(self,t):
         for expr in self.time_expr:
             if isinstance(expr, ufl.tensors.ComponentTensor):
@@ -2166,7 +2500,6 @@ class MPET:
                     expr[0].retrieve(expr[1].vector(), t,interpolate=False)
                     self.m = assemble(expr[1]*dx)
                 elif isinstance(expr[0], np.ndarray):
-                    print(type(expr[1]))
                     if isinstance(expr[1],type(expr[1])):
                         expr[1].assign(Constant(expr[0][self.i]))
                     else:
@@ -2215,7 +2548,9 @@ class MPET:
 
     def GenerateNumpySeries(self):
 
-        source_scale = 1/1173670.5408281302 #1/mm³
+        
+        source_scale = 1/self.Vol #1/mm³
+        
 
         Q = FunctionSpace(self.mesh,"CG",1)
         
@@ -2224,24 +2559,19 @@ class MPET:
         t = data[:,0]
         source = data[:,1]
         g = np.interp(self.t,t,source,period = 1.0)*source_scale
-        if self.scaleMean:
-            g -= np.mean(g)
 
+
+        #plt.plot(self.t,g)
+        #plt.show()
 
         return g
 
-    def get_system_fixed(self,n,getMesh =False):
+    def get_system_fixed(self):
         '''MPET biot with 3 networks. Return system to be solved with PETSc'''
         # For simplicity we consider a stationary problem and displacement
         # and network pressures are fixed to 0 on the entire boundary
-
-        if getMesh:
-            mesh = self.mesh
-        else:
-            #mesh = BoxMesh(Point((0,0,0)),Point((40,40,40)),n,n,n)
-            mesh = UnitCubeMesh(n,n,n)
-            self.mesh = mesh
-            self.ds = ds(mesh)
+            
+        mesh = self.mesh
 
         cell = mesh.ufl_cell()
         n = FacetNormal(mesh)
@@ -2264,15 +2594,19 @@ class MPET:
         p_VENOUS = self.boundary_conditionsP[(2, 1)]["Dirichlet"]
         p_SAS = Constant(self.p_BC_initial[0])
         p_VEN = Constant(self.p_BC_initial[1])
- 
         
-        self.bcs_D.extend([DirichletBC(W.sub(0), Constant((0, )*len(u)), self.boundary_markers, 1,)])
+        self.bcs_D.extend([DirichletBC(W.sub(0), Constant((0, )*len(u)), self.boundary_markers, 2,)])
 
+        ##P2
         self.bcs_D.extend([DirichletBC(W.sub(1).sub(2), p_VENOUS, self.boundary_markers, 1,)])
+        self.bcs_D.extend([DirichletBC(W.sub(1).sub(2), p_VENOUS, self.boundary_markers, 2,)])
+        #self.bcs_D.extend([DirichletBC(W.sub(1).sub(2), p_VENOUS, self.boundary_markers, 3,)])
+        
+        ##P3 BCs FOR PARAVASCULAR NETWORK
         self.bcs_D.extend([DirichletBC(W.sub(1).sub(3), p_SAS, self.boundary_markers, 1,)])
         self.bcs_D.extend([DirichletBC(W.sub(1).sub(3), p_VEN, self.boundary_markers, 2,)])
-
-
+        #self.bcs_D.extend([DirichletBC(W.sub(1).sub(3), p_VEN, self.boundary_markers, 3,)])
+        
         
         mu, lmbda = Constant(self.mu), Constant(self.Lambda)
         alphas = Constant((self.alpha_val[0], self.alpha_val[1],self.alpha_val[2]))
@@ -2280,9 +2614,9 @@ class MPET:
         Ks = Constant((self.K_val[0], self.K_val[1], self.K_val[2]))
         
         # Exchange matrix; NOTE: I am not sure about the sign here
-        Ts = Constant(((0,               self.gamma[0,1], self.gamma[0,2]),
-                       (self.gamma[1,0],               0, self.gamma[1,2]),
-                       (self.gamma[2,0], self.gamma[2,1],               0)))
+        Ts = Constant(((0, self.gamma[0,1], self.gamma[0,2]),
+                       (self.gamma[1,0], 0, self.gamma[1,2]),
+                       (self.gamma[2,0], self.gamma[2,1], 0)))
 
         # The first of the pressure is the total pressure, the rest ones
         # are networks
@@ -2305,15 +2639,15 @@ class MPET:
             a = a - (inner(cs[j]*ps[j], qs[j])*dx +
                      tau*inner(Ks[j]*grad(ps[j]), grad(qs[j]))*dx +
                      (1/lmbda)*sum(inner(alphas[i]*ps[i], qs[j])*dx for i in range(nnets)) +
-                    sum(tau*inner(Ts[j, i]*(ps[j] - ps[i]), qs[j])*dx for i in range(nnets) if i != j and Ts[j, i] != Constant(0)))
+                    sum(tau*inner(Ts[j, i]*(ps[j] - ps[i]), qs[j])*dx for i in range(nnets) if i != j))
 
         beta_SAS, _ = self.boundary_conditionsP[(3, 1)]["RobinWK"]
         beta_VEN, _ = self.boundary_conditionsP[(3, 2)]["RobinWK"]
         
-        #a = a
+        #a = a 
         #- inner(tau*beta_SAS*ps[2],qs[2])*self.ds(1)
         #- inner(tau*beta_VEN*ps[2],qs[2])*self.ds(2)
-        #- inner(tau*beta_SAS*ps[2],qs[2])*self.ds(3)
+        #- inner(tau*beta_VEN*ps[2],qs[2])*self.ds(3)
 
 
         # Now the preconditioner operator
@@ -2329,30 +2663,28 @@ class MPET:
                                (1/lmbda)*sum(inner(alphas[i]*ps[i], qs[j])*dx for i in range(nnets)) +
                                sum(tau*inner(Ts[j, i]*(ps[j] - ps[i]), qs[j])*dx for i in range(nnets) if i != j))
 
-        #a_prec = a_prec
-        #+ inner(tau*beta_SAS*ps[2],qs[2])*self.ds(1)
-        #+ inner(tau*beta_VEN*ps[2],qs[2])*self.ds(2)
-        #+ inner(tau*beta_SAS*ps[2],qs[2])*self.ds(3)
+      #  a_prec = a_prec
+      #  + inner(tau*beta_SAS*ps[2],qs[2])*self.ds(1)
+      #  + inner(tau*beta_VEN*ps[2],qs[2])*self.ds(2)
+      #  + inner(tau*beta_VEN*ps[2],qs[2])*self.ds(3)
 
         #Initial RHS 
         g = Constant(self.g[0][0]) #Source term
 
+ 
         L = (
-        - inner(tau*g,qs[0])*dx
-        #+ inner(-n*p_SAS,v)*self.ds(1)
-        + inner(-n*p_VEN,v)*self.ds(2)
+            inner(-n*p_SAS,v)*self.ds(1) 
+        + inner(-n*p_VEN,v)*self.ds(2)  
+        - inner(tau*g,qs[0])*dx 
         #- inner(tau*beta_SAS*p_SAS,qs[2])*self.ds(1)
         #- inner(tau*beta_VEN*p_VEN,qs[2])*self.ds(2)
-        #- inner(tau*beta_SAS*p_SAS,qs[2])*self.ds(3)
+        #- inner(tau*beta_VEN*p_VEN,qs[2])*self.ds(3)
         )
-
-        wh_ = Function(W)
         
         ic = Constant(sum([(0, 0, 0),  
                            tuple(self.p_initial[net] for net in range(1+self.numPnetworks))], ()))
         print(ic.ufl_shape)
         wh_ = interpolate(ic, W)
-
 
         pT_, *ps_ = split(wh_.sub(1))       
 
@@ -2375,19 +2707,13 @@ class MPET:
 
 
 
-    def get_system_pureNeumann(self,n,getMesh =False):
+    def get_system_pureNeumann(self):
         '''MPET biot with 3 networks. Return system to be solved with PETSc'''
         # For simplicity we consider a stationary problem and displacement
         # and network pressures are fixed to 0 on the entire boundary
 
-        if getMesh:
-            mesh = self.mesh
-        else:
-            #mesh = BoxMesh(Point((0,0,0)),Point((40,40,40)),n,n,n)
-            mesh = UnitCubeMesh(n,n,n)
-            self.mesh = mesh
-            self.ds = ds(mesh)
-
+        mesh = self.mesh
+        
         cell = mesh.ufl_cell()
         n = FacetNormal(mesh)
 
@@ -2414,10 +2740,10 @@ class MPET:
 
         self.bcs_D = []
        
-        #p_VENOUS = self.boundary_conditionsP[(2, 1)]["Dirichlet"]
+        p_VENOUS = self.boundary_conditionsP[(2, 1)]["Dirichlet"]
 
-        #self.bcs_D.extend([DirichletBC(W.sub(1).sub(2), p_VENOUS, self.boundary_markers, 1,)])
-        self.bcs_D.extend([DirichletBC(W.sub(1).sub(net), Constant(0), "on_boundary") for net in range(1,4)])
+        self.bcs_D.extend([DirichletBC(W.sub(1).sub(2), p_VENOUS, self.boundary_markers, 1,)])
+        #self.bcs_D.extend([DirichletBC(W.sub(1).sub(net), Constant(0), "on_boundary") for net in range(1,4)])
         
         
         mu, lmbda = Constant(self.mu), Constant(self.Lambda)
@@ -2436,8 +2762,6 @@ class MPET:
         pT, *ps = split(p)
         qT, *qs = split(q)
 
-        self.T = 4
-        self.numTsteps = 400
         self.dt = float(self.T/self.numTsteps)
         tau = Constant(self.dt)
 
@@ -2498,7 +2822,7 @@ class MPET:
 
         ic = Constant(sum([(0, 0, 0),  
                            tuple(self.p_initial[net] for net in range(1+self.numPnetworks))], ()))
-        print(ic.ufl_shape)
+
         wh_ = interpolate(ic, W)
 
         pT_, *ps_ = split(wh_.sub(1))       
@@ -2536,19 +2860,17 @@ class MPET:
             xdmfP.append(XDMFFile(self.filesave + "/FEM_results/p" + str(i) + ".xdmf"))
             xdmfP[i].parameters["flush_output"]=True
 
-        getMesh = True
-        self.removeRM = False #True if pure neumann for displacements
         self.LM = False #True if using Lagrange Multipliers for RM removal
 
-        assert self.removeRM or self.removeRM is False and self.LM is False, "Dont need LM if system is non-singular"
+        assert self.uNullspace or self.uNullspace is False and self.LM is False, "Dont need LM if system is non-singular"
 
-        if self.removeRM:
-            assembler, W, B, wh_, g, p_SAS, p_VEN = self.get_system_pureNeumann(8,getMesh)
+        if self.uNullspace:
+            assembler, W, B, wh_, g, p_SAS, p_VEN = self.get_system_pureNeumann()
         else: 
-            assembler, W, B, wh_, g, p_SAS, p_VEN = self.get_system_fixed(8,getMesh)
+            assembler, W, B, wh_, g, p_SAS, p_VEN = self.get_system_fixed()
         mesh = W.mesh()
 
-        if self.removeRM:
+        if self.uNullspace:
         
             # RM basis as expressions
             basis = rigid_motions.rm_basis(mesh)
@@ -2578,17 +2900,18 @@ class MPET:
         # so we need to reassemble
         assembler.assemble(b)
         
-        if self.removeRM and not self.LM:
+        if self.uNullspace and not self.LM:
             # Orthogonalize the newly filled vector
             Z.orthogonalize(b)
-
+            
 
         solver = PETScKrylovSolver()
         solver.parameters['error_on_nonconvergence'] = True
         ksp = solver.ksp()
 
-        if self.removeRM:
+        if self.uNullspace:
             # Attach the nullspace to the system operators
+            print(self.T)
             # NOTE: I put it also to the preconditioner in cases it might help
             # AMG later
             Z_ = PETSc.NullSpace().create([as_backend_type(z).vec() for z in basis_W])
@@ -2608,7 +2931,7 @@ class MPET:
         OptDB.setValue('fieldsplit_1_ksp_type', 'preonly')
         if self.LM:
             OptDB.setValue('fieldsplit_2_ksp_type', 'preonly')
-
+        
         # Set the splits
         pc = ksp.getPC()
         pc.setType(PETSc.PC.Type.FIELDSPLIT)
@@ -2623,19 +2946,18 @@ class MPET:
             OptDB.setValue('fieldsplit_2_pc_type', 'jacobi')    
         else:
             assert len(splits) == 2
-            OptDB.setValue('fieldsplit_0_pc_type', 'lu')
-            #OptDB.setValue('fieldsplit_0_pc_hypre_boomeramg_strong_threshold', '0.65')
-            #OptDB.setValue('fieldsplit_0_pc_hypre_boomeramg_coarsen_type','HMIS')
-            #OptDB.setValue('fieldsplit_0_pc_hypre_boomeramg_interp_type','ext+i')
+        
+            if self.uConditioner == 'lu':
+                OptDB.setValue('fieldsplit_0_pc_type', 'lu')
+            elif self.uConditioner == 'hypre':
+                OptDB.setValue('fieldsplit_0_pc_type', 'hypre')
+                OptDB.setValue('fieldsplit_0_pc_hypre_boomeramg_strong_threshold', '0.65')
+                OptDB.setValue('fieldsplit_0_pc_hypre_boomeramg_coarsen_type','HMIS')
+                OptDB.setValue('fieldsplit_0_pc_hypre_boomeramg_interp_type','ext+i')
+            else:
+                return exit(1)
         
         
-
-        OptDB.setValue('fieldsplit_1_pc_type', 'hypre')  # AMG in cbc block
-        OptDB.setValue('fieldsplit_1_pc_hypre_boomeramg_strong_threshold', '0.77')
-        OptDB.setValue('fieldsplit_1_pc_hypre_boomeramg_coarsen_type','HMIS')
-        OptDB.setValue('fieldsplit_1_pc_hypre_boomeramg_interp_type','ext+i')
-
-
         OptDB.setValue('ksp_norm_type', 'preconditioned')
         # Some generics
         OptDB.setValue('ksp_view', None)
@@ -2643,31 +2965,30 @@ class MPET:
         OptDB.setValue('ksp_monitor_true_residual', None)    
         OptDB.setValue('ksp_converged_reason', None)
         # NOTE: minres does not support unpreconditioned
-        OptDB.setValue('ksp_atol', 1E-10)
+        OptDB.setValue('ksp_atol', 1E-08)
         OptDB.setValue('ksp_rtol', 1E-20)
+        OptDB.setValue("ksp_max_it", 2500)
         OptDB.setValue('ksp_initial_guess_nonzero', '1')
         
         # Use them!
         ksp.setFromOptions()
 
-        t = 0
+        t = 0.0
 
         p_VEN_f = self.p_BC_initial[0]
         p_SAS_f = self.p_BC_initial[1]
         p_SP_f = self.p_BC_initial[2]
-
-       
-        ic = Constant(sum([(0, 0, 0),  
-                           tuple(self.p_initial[net] for net in range(1+self.numPnetworks))], ()))
-        print(ic.ufl_shape)
-        wh = interpolate(ic, W)
-
+        
+        wh = Function(W)
+        
         self.m = assemble(g*dx(self.mesh))
         
         self.i = 0
+        print(self.numTsteps)
 
         dV_PREV_SAS = 0.0
         dV_PREV_VEN = 0.0
+
                 
         while t < self.T:
             
@@ -2680,15 +3001,15 @@ class MPET:
             else:
                 u,p = wh.split(deepcopy = True)
 
-            if self.removeRM and not self.LM:
+            if self.uNullspace and not self.LM:
                 for i in range(6):
-                    print("Rigid motion:", assemble(inner(u, basis[i])*dx))
+                    print("Rigid motion, before:", assemble(inner(u, basis[i])*dx))
                     
                 Z.orthogonalize(wh.vector())
                 u,p = wh.split(deepcopy = True)
                 
                 for i in range(6):
-                    print("Rigid motion:", assemble(inner(u, basis[i])*dx))
+                    print("Rigid motion, after:", assemble(inner(u, basis[i])*dx))
         
             xdmfU.write(u, t)
             for j in range(self.numPnetworks+1):
@@ -2725,7 +3046,8 @@ class MPET:
             pickle.dump(results, open("%s/data_set/qois_%d.pickle" % (self.filesave, self.i), "wb"))
 
             t += self.dt
-            self.i += 1
+            self.i = self.i + 1
+
             if self.i > self.numTsteps:
                 break
             
@@ -2736,11 +3058,14 @@ class MPET:
             progress += 1
 
             assembler.assemble(b)
-
+            
             print("Norm l2 b:",norm(b, 'l2'))
 
-            if self.removeRM and not self.LM:
+            #if self.uNullspace and not self.LM:
+            #    for i in range(6):
+            #        print("Rigid motion, b:", assemble(inner(b, basis[i])*dx))
+           
+            
+            if self.uNullspace and not self.LM:
                 # Orthogonalize the newly filled vector
                 Z.orthogonalize(b)
-
-

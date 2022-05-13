@@ -68,7 +68,7 @@ boundary_parameters:
   diameter : 3.0 #[mm]
 
 source_data:
-  source_file : data/Arterial_bloodflow_shifted.csv
+  source_file : data/baladont_tot_inflow_series_shifted.csv
   scale_mean : False
   source_params:
     f : 1.0

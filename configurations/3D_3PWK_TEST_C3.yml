@@ -7,10 +7,14 @@ solver_settings:
   num_networks : 3
   num_boundaries : 2
   element_type : CG
-  mesh_resolution : 13 #Lower than this not possible  
+  solver : gmres 
+  preconditioner : hypre_euclid
+  uConditioner : lu
+  mesh_resolution : 13 #Lower than this not possible
   file_save : 3D_3PWK_TEST_C3
+  GEOM : TEST_SPHERE
   uNullspace : True
-  plot_from : 18
+  plot_from : 2
   plot_to : 24
 
 material_parameters:
@@ -26,9 +30,9 @@ material_parameters:
     - 0.333 #Biot-Willis coefficient fluid 2
     - 0.333 #Biot-Willis coefficient fluid 3
   c :
-    - 2.9e-4 #Storage coefficient fluid 1, 1/Pa
-    - 1.5e-3 #Storage coefficient fluid 2, 1/Pa
-    - 2.9e-6 #Storage coefficient fluid 3, 1/Pa
+    - 2.9e-5 #Storage coefficient fluid 1, 1/Pa
+    - 1.5e-6 #Storage coefficient fluid 2, 1/Pa
+    - 2.9e-5 #Storage coefficient fluid 3, 1/Pa
   mu_f :
     - 2.67e-3 #Viscosity fluid 1, Pa*s
     - 2.67e-3 #Viscosity fluid 2, Pa*s

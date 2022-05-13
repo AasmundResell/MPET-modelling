@@ -1,5 +1,6 @@
 from fenics import *
 from matplotlib.pyplot import show
+import sys
 
 import numpy as np
 from mshr import Sphere,Box, generate_mesh
@@ -14,17 +15,11 @@ def read_brain_mesh_3D():
     hdf.read(SD, "/subdomains")
     bnd = MeshFunction("size_t", mesh,mesh.topology().dim()-1)
     hdf.read(bnd, "/boundaries")
-    #lookup_table = MeshFunction("size_t", mesh, mesh.topology().dim())
-    #hdf.read(lookup_table, '/lookup_table')
-    #TensorSpace = TensorFunctionSpace(mesh, 'DG', 0)
-    #MDSpace = FunctionSpace(mesh, 'DG', 0)
-    #MD = Function(MDSpace)
-    #Kt = Function(TensorSpace)
-    #hdf.read(MD, '/MD')
-    #hdf.read(Kt, '/DTI')
     
     File('meshes/subdomains.pvd')<<SD
     File('meshes/bnd.pvd')<<bnd 
+    info(mesh)
+    info(SD)
 
     return mesh,SD,bnd
 
@@ -32,9 +27,18 @@ def create_sphere_mesh(N):
 
     mesh,facet_f = GenerateSphereMesh(N)
 
-    hdf = HDF5File(mesh.mpi_comm(), "sphere.h5" , "w")
+    hdf = HDF5File(mesh.mpi_comm(), "sphereScaledN{}.h5".format(N) , "w")
     hdf.write(mesh,"/mesh")
     hdf.write(facet_f,"/facet")
+    mesh = Mesh()
+    path = "/home/asmund/dev/MPET-modelling/meshes/sphereScaledN{}.h5".format(N)
+    hdf = HDF5File(mesh.mpi_comm(),path , "r")
+    hdf.read(mesh, "/mesh", False)
+    bnd = MeshFunction("size_t", mesh,mesh.topology().dim()-1)
+    hdf.read(bnd, "/facet")
+    File('/home/asmund/dev/MPET-modelling/meshes/sphere_boundariesN{}.pvd'.format(N))<<bnd
+    info(mesh)
+    info(facet_f)
 
 
 def read_brain_scale(mesh):
@@ -46,7 +50,7 @@ def read_brain_scale(mesh):
 
 def GenerateSphereMesh(N):
     # Radius of outer and inner sphere
-    oradius, iradius = 100., 30.
+    oradius, iradius = 66.04, 19.81
     
     # Geometry
     outer_sphere = Sphere(Point(0., 0., 0.), oradius)
@@ -71,7 +75,13 @@ def GenerateSphereMesh(N):
     print("LEN inner boundary: ",len(np.where(facet_f.array() == 2)[0]))
     return mesh,facet_f
 
+
+
 if __name__ == "__main__":
+
+    n = sys.argv[1]
     mesh = read_brain_mesh_3D()
-    #scale = read_brain_scale(mesh)
-       
+    N = int(n)
+    create_sphere_mesh(N)
+    #_,_,_= read_brain_mesh_3D()
+

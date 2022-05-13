@@ -4,18 +4,26 @@ import matplotlib.pyplot as plt
 
 p = np.linspace(-20,20)
 
-E_1 = 2#[1/mL]
 
-E_2 = 0.2
+PVI1 = 0.5 #ml
+PVI2 = 1 #ml
 
+dt = 0.04 #s
+N = 24 #Timesteps
+DV = np.linspace(-0.5,0.5,100)
 
-p_r1 = 0 #referance pressure, mmHg
-p_r2 = 0#baseline pressure, mmHg
+p0 = 133 #1mmHg
 
-C_1 = 1/(E_1*(p-p_r1))
-C_2 = 1/(E_2*(p-p_r2))
+ICP1 = p0*(10**(DV*dt/PVI1) - 1)
+ICP2 = p0*(10**(DV*dt/PVI2) - 1)
+#ICP3 = p0*10**(DV*dt3/PVI1)
+#ICP4 = p0*10**(DV*dt/PVI4)
 
-plt.plot(p,C_1,label='C_1')
-plt.plot(p,C_2,label='C_2')
+plt.plot(DV,ICP1,label='PVI = 0.5')
+plt.plot(DV,ICP2,label='PVI = 1')
+#plt.plot(DV,ICP3,label='PVI = 8')
+#plt.plot(DV,ICP4,label='PVI = 1.5')
+plt.xlabel("DeltaV[ml]")
+plt.ylabel("Pressure[Pa]")
 plt.legend()
 plt.show()
