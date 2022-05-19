@@ -83,7 +83,7 @@ def run_MPET_3D():
 
 def run_MPET_3D_TestSphere():
 
-    ymlFile = open("configurations/SPHERE_N13_paraV_TEST1.yml") 
+    ymlFile = open("configurations/SPHERE_paraV_TEST2.yml") 
     
     parsedValues = yaml.load(ymlFile, Loader=yaml.FullLoader)
     materialParameters = parsedValues['material_parameters']
@@ -94,7 +94,6 @@ def run_MPET_3D_TestSphere():
     meshN = settings["mesh_resolution"]
 
 
-    """
     mesh = Mesh("meshes/sphere_mesh/sphere_hollow.xml")
     facet_f = MeshFunction("size_t", mesh, 2)
 
@@ -122,6 +121,7 @@ def run_MPET_3D_TestSphere():
     info(mesh)
     info(facet_f)
 
+    """
 
     U,pVentricles,pSkull = generateUFL_BCexpressions()
     beta_VEN = boundaryParameters["beta_ven"]
@@ -146,6 +146,8 @@ def run_MPET_3D_TestSphere():
         (3, 1): {"DirichletWK": pSkull},
         (3, 2): {"DirichletWK": pVentricles},
     }
+        #(2, 1): {"Neumann": 0},
+        #(2, 2): {"Neumann": 0},
         #(3, 1): {"RobinWK": (beta_SAS,pSkull)},
         #(3, 2): {"RobinWK": (beta_VEN,pVentricles)},
 
@@ -161,7 +163,7 @@ def run_MPET_3D_TestSphere():
     )
     
     Solver3D.printSetup()
-    Solver3D.solve()
+    #Solver3D.solve()
 
     Solver3D.plotResults()
     Solver3D.printStatistics()

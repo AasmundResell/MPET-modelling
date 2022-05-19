@@ -15,8 +15,8 @@ dp_sp/dt = 1/C_sp(G_fm(p_SAS-p_SP))
 
 VolScale = 1/1000  # mm³ to mL
 
-T = 24
-N = 600
+T = 12
+N = 300
 
 dt = T/600
 print("dt:", dt)
@@ -26,6 +26,21 @@ p = np.zeros((3, t.shape[0]))
 Q_AQ = np.zeros_like(t)
 Q_FM = np.zeros_like(t)
 
+source_scale = 1/1173887
+
+sourceFile = "data/Arterial_bloodflow_shifted.csv"
+time_period = 1.0
+data = np.loadtxt(sourceFile, delimiter = ",")
+data_t = data[:,0]
+source = data[:,1]
+g = np.interp(t,data_t,source,period = 1.0)*source_scale
+gm = np.mean(g)
+print(gm)
+plt.plot(t,g)
+plt.show()
+
+
+
 dp = 0.5 #mmHg
 C_SAS = 1/(dp*133)  # [mL/Pa]
 C_VEN = 1/(dp*133)  # [mL/Pa]
@@ -33,16 +48,25 @@ C_SP = C_SAS*10  # [mL/Pa#]
 
 C = np.array([[C_SAS], [C_VEN], [C_SP]])
 
-Vv_dot = 1000*np.sin(2*np.pi*(1/4+t))  
-Vs_dot = 1000*np.sin(2*np.pi*(3/4+t)) 
+
+Vv_dot = -50000*(g - gm)  
+Vs_dot = 100000*(g - gm)
+
+plt.plot(t,Vs_dot)
+plt.show()
+
+
+#Vv_dot = 1000*np.sin(2*np.pi*(1/4+t))  
+#Vs_dot = 1000*np.sin(2*np.pi*(3/4+t)) 
 Vsp_dot = np.zeros_like(t)
 V_dot = np.array([Vs_dot, Vv_dot, Vsp_dot])
 
 """
 plt.figure(1)
-plt.plot(t[500:], Vv_dot[500:],label='Vv_dot')
-plt.plot(t[500:], Vs_dot[500:],label='Vs_dot')
+plt.plot(t[250:], Vv_dot[250:],label='Vv_dot')
+plt.plot(t[250:], Vs_dot[250:],label='Vs_dot')
 plt.legend()
+plt.show()
 """
 
 # Conductance
@@ -80,14 +104,14 @@ for i, tt in enumerate(t[1:]):
     print("Q_FM[mL]:", Q_FM[i])
 
 plt.figure(2)
-plt.plot(t[500:], p[0,500:],label='p_s')
-plt.plot(t[500:], p[1,500:],label='p_v')
-plt.plot(t[500:], p[2,500:],label='p_sp')  
+plt.plot(t[250:], p[0,250:],label='p_s')
+plt.plot(t[250:], p[1,250:],label='p_v')
+plt.plot(t[250:], p[2,250:],label='p_sp')  
 plt.legend()
 
 plt.figure(3)
-plt.plot(t[500:], Q_AQ[500:],label='Q_aq')
-plt.plot(t[500:], Q_FM[500:],label='Q_fm')
+plt.plot(t[250:], Q_AQ[250:],label='Q_aq')
+plt.plot(t[250:], Q_FM[250:],label='Q_fm')
 plt.legend()
 plt.show()
 
