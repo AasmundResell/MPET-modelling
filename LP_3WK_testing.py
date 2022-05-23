@@ -18,7 +18,7 @@ VolScale = 1/1000  # mm³ to mL
 T = 12
 N = 300
 
-dt = T/600
+dt = T/N
 print("dt:", dt)
 
 t = np.linspace(0, T, N+1)

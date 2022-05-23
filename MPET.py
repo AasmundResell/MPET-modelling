@@ -666,9 +666,8 @@ class MPET:
             results["p_VEN"] = p_VEN_f 
 
 
-            ICP, p_VEN_f,Vv_dot,Vs_dot,Q_AQ = self.coupled_2P_nonlinear_model(dV_PREV_SAS,dV_PREV_VEN,results) 
-            #ICP, p_VEN_f, Vv_dot,Vs_dot,Q_AQ = self.coupled_2P_nonnonlinear_model(dV_PREV_SAS,dV_PREV_VEN,results) 
-            
+            #ICP, p_VEN_f,Vv_dot,Vs_dot,Q_AQ = self.P2_nonlinear_model(dV_PREV_SAS,dV_PREV_VEN,results) 
+            ICP, p_VEN_f,Vv_dot,Vs_dot,Q_AQ = self.P2_nonlinear_noncommunicating_model(dV_PREV_SAS,dV_PREV_VEN,results)
 
             self.update_windkessel_expr(ICP + p_SAS_f ,ICP + p_VEN_f ) # Update all terms dependent on the windkessel pressures
             print("Relative Pressure SAS:",p_SAS_f)
@@ -1367,7 +1366,7 @@ class MPET:
 
         return x[0], x[1],Vv_dot ,Vs_dot ,Q_AQ, ICP
 
-    def coupled_2P_nonlinear_model(self,dV_SAS_prev,dV_VEN_prev,results):
+    def P2_nonlinear_model(self,dV_SAS_prev,dV_VEN_prev,results):
         """
         This model couples the two pressures between the ventricles and SAS through the aqueduct, both compartments are modeled
         with Windkessel models.
@@ -1420,7 +1419,7 @@ class MPET:
             PVI = self.PVI
 
 
-        if (self.t[self.i] < 7.0):
+        if (self.t[self.i] < 8.0):
             p_VEN = 0
         else:
             p_VEN = (VolScale*Vv_dot + self.C_VEN/self.dt*p_VEN)/(self.C_VEN/self.dt+G_aq)
@@ -1429,32 +1428,24 @@ class MPET:
         # "Positive" direction upwards, same as baledent article
         print("Q_AQ[mL]:",Q_AQ)
 
-        if (self.i % 25 ==  0 ):
-                self.ref_volume_sas = results["dV_SAS"] 
-                self.dVs = 0.0
-                print("Reference volume for SAS: ", self.ref_volume_sas)
-        
+      
         if (self.t[self.i] < 2.0):
             ICP = self.ICP
             self.Q_CSF_T = 0.0
             self.Q_AQ_T = 0.0
             self.dVs = 0.0
         else:
-            if (self.i % 25 ==  0 ):
-                self.ref_volume_sas = results["dV_SAS"] 
+            #if (self.i % 25 ==  0 ):
                 #self.dVs = 0.0
-                print("Reference volume for SAS: ", self.ref_volume_sas)
-        
+            
             self.Q_CSF_T = self.Q_CSF_T + Q_CSF*self.dt  #Total outflow
             self.dVs = self.dVs + Vs_dot*self.dt
-            if (self.t[self.i] > 10.0):
+            if (self.t[self.i] > 8.0):
                 self.Q_AQ_T = self.Q_AQ_T + Q_AQ*self.dt
 
             dVrel = True
             dPVI = 500
             if dVrel:
-                dVols = results["dV_SAS"] - self.ref_volume_sas 
-
                 dVs = ( self.dVs + self.Q_CSF_T + self.Q_AQ_T )*VolScale
                 ICP = self.ICP*10**(dVs/PVI)
             else:
@@ -1470,6 +1461,103 @@ class MPET:
         print("Pressure for VEN: ", ICP + p_VEN)
 
         return ICP, p_VEN,Vv_dot ,Vs_dot ,Q_AQ
+
+
+
+    def P2_nonlinear_noncommunicating_model(self,dV_SAS_prev,dV_VEN_prev,results):
+        """
+        This model couples the two pressures between the ventricles and SAS through the aqueduct, both compartments are modeled
+        with Windkessel models.
+
+        Solves using implicit (backward) Euler
+
+        ICP = p0*10^((Vs_dot + Q_SAS + G_aq * p_VEN)*dt/PVI)
+        dp_ven/dt = 1/C_ven(Vv_dot + Q_VEN - G_aq * p_VEN)
+        
+        """
+
+        p_VEN = results["p_VEN"]
+        
+        if (self.t[self.i] < 5.0):
+            VolScale = 1/10000 #mm³ to mL   
+        elif (self.t[self.i] >= 5.0 and self.t[self.i] <= 6.0): 
+            VolScale = 1/(10000-9000*(self.t[self.i]-5.0))
+        else:
+            VolScale = 1/1000 #mm³ to mL
+
+        print("Volume scale:",(int)(1/VolScale))
+        #P_SAS is determined from Windkessel parameters
+        Q_SAS = results["Q_SAS_N3"]
+        print("Q_SAS[mm³] :",Q_SAS)
+
+        #P_VEN is determined from volume change of the ventricles
+        Q_VEN = results["Q_VEN_N3"]
+        print("Q_VEN[mm³] :",Q_VEN)
+
+        Q_CSF = results["TOTAL_OUTFLOW_N3"] #Outflow over boundary
+        #Volume change of ventricles
+        Vv_dot = 1/self.dt*(results["dV_VEN"]-dV_VEN_prev)
+        
+        #Volume change of SAS
+        Vs_dot = 1/self.dt*(results["dV_SAS"]-dV_SAS_prev)
+        
+        print("dV/dt VEN[mm³/s] :",Vv_dot)
+        print("dV/dt SAS[mm³/s] :",Vs_dot)
+
+
+        
+        if (self.t[self.i] <= 3.0):
+            PVI = self.PVI*2 #mL
+        elif (self.t[self.i] > 3.0 and self.t[self.i] <= 4.0): 
+            PVI = self.PVI*(2-1*(self.t[self.i]-3.0))
+        else:
+            PVI = self.PVI
+
+
+        
+        if (self.t[self.i] < 2.0):
+            ICP = self.ICP
+            self.Q_CSF_T = 0.0
+            self.dVs = 0.0
+        else:
+            #if (self.i % 25 ==  0 ):
+                #self.dVs = 0.0
+                
+            self.Q_CSF_T = self.Q_CSF_T + Q_SAS*self.dt  #Total outflow
+            self.dVs = self.dVs + Vs_dot*self.dt
+            
+            if (self.t[self.i] < 8.0):
+                self.dVv = 0
+                self.Q_VEN_T = 0
+            else:
+                
+                self.Q_VEN_T = self.Q_VEN_T + Q_VEN*self.dt  #Total outflow
+                self.dVv = self.dVv + Vv_dot*self.dt
+            
+                PVIv = 50    
+                dVv = ( self.dVv + self.Q_VEN_T)*VolScale
+                p_VEN = self.ICP*(10**(dVv/PVIv)-1)
+            
+                print("dVv[ml]: ",dVv)
+  
+            dVrel = True
+            dPVI = 500
+            if dVrel:
+                
+                dVs = ( self.dVs + self.Q_CSF_T)*VolScale
+                ICP = self.ICP*10**(dVs/PVI)
+            else:
+                dVs = (self.Q_CSF_T)*VolScale
+                ICP = self.ICP*10**(dVs/PVI + Vs_dot*VolScale/dPVI)
+
+            print("dV[ml]: ",dVs)
+  
+
+
+        print("Pressure for SAS: ", ICP)
+        print("Pressure for VEN: ", ICP + p_VEN)
+
+        return ICP, p_VEN,Vv_dot ,Vs_dot ,0.0
 
     def coupled_2P_nonnonlinear_model(self,dV_SAS_prev,dV_VEN_prev,results):
         """

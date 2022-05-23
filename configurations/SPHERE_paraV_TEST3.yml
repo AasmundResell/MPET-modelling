@@ -2,8 +2,8 @@
 
 solver_settings:
   description : 2PWK non-linear, large sphere,Q_AQ term included, dV/dt for ICP
-  T : 72
-  num_T_steps : 1800
+  T : 24
+  num_T_steps : 600
   num_networks : 3
   num_boundaries : 2
   element_type : CG
@@ -14,9 +14,9 @@ solver_settings:
   file_save : SPHERE_paraV_TEST3
   GEOM : TEST_SPHERE
   uNullspace : True
-  vein_transfer : True
-  plot_from : 36
-  plot_to : 40
+  vein_transfer : False
+  plot_from : 20
+  plot_to : 24
 
 material_parameters:
   E : 1642 # Pa, Young modulus
@@ -27,9 +27,9 @@ material_parameters:
     - 1.0e-10 #m² Permeability fluid 2
     - 1.0e-10 #m² Permeability fluid 3
   alpha :
-    - 0.58 #Biot-Willis coefficient fluid 1
-    - 0.02 #Biot-Willis coefficient fluid 2
-    - 0.40 #Biot-Willis coefficient fluid 3
+    - 0.45 #Biot-Willis coefficient fluid 1
+    - 0.45 #Biot-Willis coefficient fluid 2
+    - 0.1  #Biot-Willis coefficient fluid 3
   c :
     - 2.9e-7 #Storage coefficient fluid 1, 1/Pa
     - 1.5e-4 #Storage coefficient fluid 2, 1/Pa
