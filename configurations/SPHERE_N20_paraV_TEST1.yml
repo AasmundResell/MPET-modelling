@@ -2,16 +2,16 @@
 
 solver_settings:
   description : 2PWK non-linear, test of N13 sphere mesh
-  T : 24.0
-  num_T_steps : 600
+  T : 48
+  num_T_steps : 1200
   num_networks : 3
   num_boundaries : 2
   element_type : CG
-  solver : gmres 
-  preconditioner : hypre_euclid
+  solver : lu 
+  preconditioner : none
   uConditioner : lu
-  mesh_resolution : 13 #Lower than this not possible  
-  file_save : SPHERE_N13_paraV_TEST1
+  mesh_resolution : 20  
+  file_save : SPHERE_N20_paraV_TEST1
   GEOM : TEST_SPHERE
   uNullspace : True
   vein_transfer : False

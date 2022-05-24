@@ -2,20 +2,21 @@
 
 solver_settings:
   description : 2PWK non-linear, test of sensitivity for mesh resolution
-  T : 24.0
-  num_T_steps : 600
+  T : 32.0
+  num_T_steps : 800
   num_networks : 3
   num_boundaries : 2
   element_type : CG
   solver : gmres 
   preconditioner : hypre_euclid
   uConditioner : lu
-  mesh_resolution : 13 #Lower than this not possible  
+  mesh_resolution : 15
   file_save : SPHERE_N15_paraV_TEST1
   GEOM : TEST_SPHERE
   uNullspace : True
-  plot_from : 2
-  plot_to : 24
+  vein_transfer : False
+  plot_from : 28
+  plot_to : 32
 
 material_parameters:
   E : 1642 # Pa, Young modulus
@@ -26,13 +27,13 @@ material_parameters:
     - 1.0e-10 #m² Permeability fluid 2
     - 1.0e-10 #m² Permeability fluid 3
   alpha :
-    - 0.58 #Biot-Willis coefficient fluid 1
+    - 0.6 #Biot-Willis coefficient fluid 1
     - 0.02 #Biot-Willis coefficient fluid 2
-    - 0.4 #Biot-Willis coefficient fluid 3
+    - 0.38 #Biot-Willis coefficient fluid 3
   c :
-    - 2.9e-7 #Storage coefficient fluid 1, 1/Pa
-    - 1.5e-4 #Storage coefficient fluid 2, 1/Pa
-    - 2.9e-7 #Storage coefficient fluid 3, 1/Pa
+    - 4.47e-7 #Storage coefficient fluid 1, 1/Pa
+    - 1.0e-4 #Storage coefficient fluid 2, 1/Pa
+    - 4.47e-7 #Storage coefficient fluid 3, 1/Pa
   #Storage coefficient fluid 3, 1/Pa
   mu_f :
     - 2.67e-3 #Viscosity fluid 1, Pa*s
@@ -48,25 +49,24 @@ material_parameters:
     - 1.75e-7 #1/(Pa*s) Transfer network: 1-3
     - 1.75e-6 #1/(Pa*s) Transfer network: 2-1
     - 0 #1/(Pa*s) Transfer network: 2-2
-    - 0 #1/(Pa*s) Transfer network: 2-3
+    - 7.35e-6 #1/(Pa*s) Transfer network: 2-3
     - 1.75e-7 #1/(Pa*s) Transfer network: 3-1
-    - 0 #1/(Pa*s) Transfer network: 3-2
+    - 7.35e-6 #1/(Pa*s) Transfer network: 3-2
     - 0 #1/(Pa*s) Transfer network: 3-3
 
 
 boundary_parameters: 
   Compliance_sas : 0.283 # [mL/Pa] 
-  Compliance_ven : 0.283 # [mL/Pa] 
+  Compliance_ven : 0.0411 # [mL/Pa] estimate of compliance
   Compliance_spine : 1.41 # [mL/Pa#] 
-  beta_sas : 1.0 
-  beta_ven : 1.0
+  beta_sas : 0.1 
+  beta_ven : 0.1
   p_sas_initial : 0 #Assumes 10 mmHg baseline ICP
   p_ven_initial : 0
   p_spine_initial : 0
   ICP : 1330 #10 mmHg, baseline ICP
-  PVI : 6 #ml
+  PVI : 7.36 #ml, Tain2011 
   p_vein : 1117 #8.4 mmHg, back pressure, vein network
-  #for alt model, remember that mesh is in mm
   length : 70.0 #[mm]
   diameter : 3.0 #[mm]
 

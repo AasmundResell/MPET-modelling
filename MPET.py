@@ -42,7 +42,8 @@ class MPET:
                  boundary_conditionsP,
                  **kwargs,
         ):
-        self.mesh = mesh        
+        self.mesh = mesh
+        self.mesh_res = kwargs.get("mesh_resolution")
         self.boundary_markers = boundary_markers
         self.boundary_conditionsU = boundary_conditionsU
         self.boundary_conditionsP = boundary_conditionsP
@@ -648,7 +649,7 @@ class MPET:
             [bc.apply(A) for bc in self.bcs_D]
             [bc.apply(b) for bc in self.bcs_D]
             
-            solve(A, up.vector(), b)#, self.solverType, self.preconditioner ) #Solve system
+            solve(A, up.vector(), b, self.solverType , self.preconditioner ) #Solve system
 
             #Write solution at time t
             up_split = up.split(deepcopy = True)
@@ -666,8 +667,8 @@ class MPET:
             results["p_VEN"] = p_VEN_f 
 
 
-            #ICP, p_VEN_f,Vv_dot,Vs_dot,Q_AQ = self.P2_nonlinear_model(dV_PREV_SAS,dV_PREV_VEN,results) 
-            ICP, p_VEN_f,Vv_dot,Vs_dot,Q_AQ = self.P2_nonlinear_noncommunicating_model(dV_PREV_SAS,dV_PREV_VEN,results)
+            ICP, p_VEN_f,Vv_dot,Vs_dot,Q_AQ = self.P2_nonlinear_model(dV_PREV_SAS,dV_PREV_VEN,results) 
+            #ICP, p_VEN_f,Vv_dot,Vs_dot,Q_AQ = self.P2_nonlinear_noncommunicating_model(dV_PREV_SAS,dV_PREV_VEN,results)
 
             self.update_windkessel_expr(ICP + p_SAS_f ,ICP + p_VEN_f ) # Update all terms dependent on the windkessel pressures
             print("Relative Pressure SAS:",p_SAS_f)
@@ -692,7 +693,10 @@ class MPET:
 
 
 
-    def printStatistics(self):
+    def printStatistics(self,plot_from, plot_to):
+
+        self.plot_from = plot_from
+        self.plot_to = plot_to
 
         
         initStats = int(self.numTsteps/self.T*self.plot_from)
@@ -828,8 +832,10 @@ class MPET:
         self.fileStats.write(pressureStats)
         
 
-    def plotResults(self):
+    def plotResults(self, plot_from, plot_to):
 
+        self.plot_from = plot_from
+        self.plot_to = plot_to
         plotDir = "%s/plots/" %self.filesave
         initPlot = int(self.numTsteps/self.T*self.plot_from)
         endPlot = int(self.numTsteps/self.T*self.plot_to)
@@ -846,7 +852,8 @@ class MPET:
         Vven_fig, Vven_ax = pylab.subplots(figsize=(12, 8))
         dV_dot_fig, dV_dot_ax = pylab.subplots(figsize=(12, 8))
         PW_figs, PW_axs  = pylab.subplots(figsize=(12, 8)) #Pressure Windkessel
-        BV_figs, BV_axs  = pylab.subplots(figsize=(12, 8)) #Outflow venous blood
+        BV_figs, BV_axs  = pylab.subplots(figsize=(12, 8)) #Inflow/Outflow blood
+        NBV_figs, NBV_axs  = pylab.subplots(figsize=(12, 8)) #Net Inflow/Outflow blood
         ABP_figs,ABP_axs  = pylab.subplots(figsize=(12, 8)) #Outflow venous blood
         Qv_figs, Qv_axs  = pylab.subplots(figsize=(12, 8)) #Outflow CSF to ventricles
         ICV_fig, ICV_ax  = pylab.subplots(figsize=(12, 8)) #Outflow CSF to ventricles
@@ -873,7 +880,7 @@ class MPET:
         times = (df["t"].to_numpy())
          # Plot volume vs time
         V_ax.plot(times[initPlot:endPlot], df["dV"][initPlot:endPlot], markers[0], color="seagreen",label="div(u)dx")
-        V_ax.plot(times[initPlot:endPlot], df["dV_SAS"][initPlot:endPlot] + df["dV_VEN"][initPlot:endPlot], markers[1], color="darkmagenta",label="$(u \cdot n)ds_{SAS}$")
+        V_ax.plot(times[initPlot:endPlot], df["dV_SAS"][initPlot:endPlot], markers[1], color="darkmagenta",label="$(u \cdot n)ds_{SAS}$")
         V_ax.set_xlabel("time (s)")
         V_ax.set_xticks(x_ticks)
         V_ax.set_ylabel("V (mm$^3$)")
@@ -1031,8 +1038,9 @@ class MPET:
             # Plot outflow of venous blood
             BV_axs.plot(times[initPlot:endPlot], BV[initPlot:endPlot], markers[0], color="seagreen",label="$B_{v}$")
 
-            BV_axs.plot(times[initPlot:endPlot], Q_V*scaleBV , markers[0], color="cornflowerblue",label="$B_{vC}$")
-
+            BV_axs.plot(times[initPlot:endPlot], Q_V*scaleBV , markers[0], color="cornflowerblue",label="$B_{vc}$")
+            NBV_axs.plot(times[initPlot:endPlot], BA[initPlot:endPlot] - Q_V*scaleBV , markers[0], color="cornflowerblue")
+            
 
         BV_axs.set_xlabel("time (s)")
         BV_axs.set_xticks(x_ticks)
@@ -1040,6 +1048,12 @@ class MPET:
         BV_axs.grid(True)
         BV_axs.legend()
         BV_figs.savefig(plotDir + "brain-BV.png")
+
+        NBV_axs.set_xlabel("time (s)")
+        NBV_axs.set_xticks(x_ticks)
+        NBV_axs.set_ylabel("Net cranial blood flow (mm$^3$/s)")
+        NBV_axs.grid(True)
+        NBV_figs.savefig(plotDir + "brain-NBV.png")
 
 
         # Plot Windkessel pressure
@@ -1559,139 +1573,6 @@ class MPET:
 
         return ICP, p_VEN,Vv_dot ,Vs_dot ,0.0
 
-    def coupled_2P_nonnonlinear_model(self,dV_SAS_prev,dV_VEN_prev,results):
-        """
-        This model couples the two pressures between the ventricles and SAS through the aqueduct, both compartments are modeled
-        with Windkessel models.
-
-        Solves using implicit (backward) Euler
-
-        ICP = p0*10^((Vs_dot + Q_SAS + G_aq * p_VEN)*dt/PVI)
-        p_VEN = pv(10^((Vv_dot + Q_VEN + G_aq * p_VEN)*dt/PVI_v)-1)
-        
-        """
-
-        
-        from scipy.optimize import fsolve
-
-        
-        if (self.t[self.i] < 2.0):
-            VolScale = 1/10000 #mm³ to mL   
-        elif (self.t[self.i] > 2.0 and self.t[self.i] <= 3.0): 
-            VolScale = 1/(10000-9000*(self.t[self.i]-2.0))
-        else:
-            VolScale = 1/1000 #mm³ to mL
-
-        p_VEN = results["p_VEN"]
-        #P_SAS is determined from Windkessel parameters
-        Q_SAS = results["Q_SAS_N3"]
-        print("Q_SAS[mm³] :",Q_SAS)
-
-        #P_VEN is determined from volume change of the ventricles
-        Q_VEN = results["Q_VEN_N3"]
-        print("Q_VEN[mm³] :",Q_VEN)
-
-        #Volume change of ventricles
-        Vv_dot = 1/self.dt*(results["dV_VEN"]-dV_VEN_prev)
-        
-        #Volume change of SAS
-        Vs_dot = 1/self.dt*(results["dV_SAS"]-dV_SAS_prev)
-        
-        print("Volume change VEN[mm³] :",Vv_dot)
-        print("Volume change SAS[mm³] :",Vs_dot)
-
-        #Conductance
-        G_aq = np.pi*self.d**4/(128*self.L*self.mu_f[2]) #Poiseuille flow constant
-        #G_aq = 5/133 #mL/mmHg to mL/Pa, from Ambarki2007
-        G_aq = G_aq*1/1000 #mm³/Pa to mL/Pa
-
-        deltaVs = (Q_SAS + Vs_dot )*VolScale
-        print("dVs/dt[ml/s]: ",deltaVs)
-
-        deltaVv = (Q_VEN + Vv_dot )*VolScale
-        print("dVv/dt[ml/s]: ",deltaVv)
- 
-        if (self.t[self.i] <= 3.0):
-            PVI = self.PVI*10 #mL
-        #elif (self.t[self.i] > 3.0 and self.t[self.i] <= 4.0): 
-        #    PVI = self.PVI*10*(1-(self.t[self.i]-3.0))
-        else:
-            PVI = self.PVI*10
-        
-        
-        if (self.i % 25 ==  0 ):
-                self.ref_volume_sas = results["dV_SAS"] 
-                self.ref_volume_ven = results["dV_VEN"]
-                print("Reference volume for SAS: ", self.ref_volume_sas)
-                print("Reference volume for VEN: ", self.ref_volume_ven)
-
-        ICP_v = None
-
-        if (self.t[self.i] < 1.0):
-            ICP = 1330
-            self.Q_SAS_T = 0.0
-            self.Q_VEN_T = 0.0
-            self.Q_AQ_T = 0.0
-        else:
-            self.Q_SAS_T = self.Q_SAS_T + Q_SAS*self.dt #Total outflow
-            self.Q_VEN_T = self.Q_VEN_T + Q_VEN*self.dt #Total outflow
-
-            
-            dVols = results["dV_SAS"] - self.ref_volume_sas 
-            dVolv = results["dV_VEN"] - self.ref_volume_ven 
-
-            dVs = ( dVols + self.Q_SAS_T+ self.Q_VEN_T - self.Q_AQ_T)*VolScale
-            dVv = ( dVolv + self.Q_AQ_T)*VolScale
-            print("dVs[ml]: ",dVs)
-            print("dVv[ml]: ",dVv)
-            dVv_dot = VolScale*(Vv_dot + Q_VEN)
-            
-            self.ICP = 1330
-            def funclog(p):
-                ICP_s,ICP_v = p
-                return [ICP_s - self.ICP*10**((dVs + G_aq*(ICP_v - ICP_s))/PVI),
-                        ICP_v - ICP_s - self.ICP*10**((dVv + G_aq*(ICP_s - ICP_v))/(PVI*100))]
-            def funclinV1(p):
-                ICP,p_VEN = p 
-                return [ICP - self.ICP*10**((dVs + G_aq*p_VEN)/PVI),
-                        p_VEN - (dVv_dot + 0.4343*PVI/ICP/self.dt*p_VEN)/(0.4343*PVI/ICP/self.dt+G_aq)]
-
-            def funclinV2(p):
-                ICP,p_VEN = p               
-                return [ICP - self.ICP*10**((dVs + G_aq*p_VEN)/PVI),
-                        p_VEN - (dVv_dot + 0.4343*PVI/(ICP + p_VEN)/self.dt*p_VEN)/(0.4343*PVI/(ICP + p_VEN)/self.dt+G_aq)]
-
-            if (self.t[self.i] < 5.0):
-                ICP = self.ICP*10**(dVs/PVI)
-                ICP_v = ICP
-            else:
-                ICP = self.ICP*10**(dVs/PVI)
-                ICP_v = ICP + self.ICP*(10**(dVv/(PVI))-1)
-                #ICP, ICP_v = fsolve(funclog, [self.ICP, self.ICP])
-
-            #ICP, p_VEN = fsolve(funclinV1, [self.ICP, 5])
-            #ICP, p_VEN = fsolve(funclinV2, [self.ICP, 0])
-
-
-        if ICP_v == None:
-            Q_AQ = -G_aq*p_VEN
-        else:
-            Q_AQ = G_aq*(ICP - ICP_v)
-            p_VEN = ICP_v - ICP
-        self.Q_VEN_T = self.Q_VEN_T
-        self.Q_SAS_T = self.Q_SAS_T
-        self.Q_AQ_T =self.Q_AQ_T + Q_AQ*1/1000 #previos
-
-        # "Positive" direction upwards, same as baledent article
-        print("Q_AQ[mL]:",Q_AQ)
-
-        print("Pressure for SAS: ", ICP)
-        print("Pressure for VEN: ", ICP + p_VEN)
-
-        return ICP, p_VEN, Vv_dot, Vs_dot ,Q_AQ
-
-
-
 
     def coupled_3P_model(self,dV_SAS_prev,dV_VEN_prev,results):
         """
@@ -2079,6 +1960,7 @@ class MPET:
                           ['Number of timesteps',self.numTsteps],
                           ['Element type',self.element_type],
                           ['Mesh type',self.mesh_type],
+                          ['Mesh resolution',self.mesh_res],
                           ['Volume of mesh', self.Vol]],
                          headers=['Setting', 'Value']
                         )
@@ -2193,7 +2075,7 @@ class MPET:
         
         source_scale = 1/self.Vol #1/mm³
 
-        source_scale = 1/1173887
+        #source_scale = 1/1173887
         
         #self.g_mean = 13011.4*source_scale
         
